@@ -13,6 +13,8 @@ import websockets
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import OperationalError
@@ -54,6 +56,27 @@ def initialize_database_schema() -> None:
             raise
 
 
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    """Middleware to handle X-Forwarded headers from reverse proxy"""
+    async def dispatch(self, request: Request, call_next):
+        # Get forwarded headers
+        forwarded_proto = request.headers.get("x-forwarded-proto", "http")
+        forwarded_host = request.headers.get("x-forwarded-host")
+        forwarded_for = request.headers.get("x-forwarded-for")
+        
+        # Update scope with forwarded information
+        if forwarded_proto:
+            request.scope["scheme"] = forwarded_proto
+        if forwarded_host:
+            request.scope["server"] = (forwarded_host.split(":")[0], int(forwarded_host.split(":")[-1]) if ":" in forwarded_host else (443 if forwarded_proto == "https" else 80))
+        if forwarded_for:
+            # Get the client IP (first IP in the list if multiple)
+            client_ip = forwarded_for.split(",")[0].strip()
+            request.scope["client"] = (client_ip, 0)
+        
+        return await call_next(request)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_database_schema()
@@ -68,7 +91,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DisplayManager V1", lifespan=lifespan)
+# Add session middleware first (will be applied last, so runs last)
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+# Trust proxy headers for HTTPS behind reverse proxy
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+# Proxy headers middleware must run first to update scope
+app.add_middleware(ProxyHeadersMiddleware)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -313,19 +341,21 @@ async def admin_set_layout_assignments(
     zone_id: list[str] = Form(...),
     source_id: list[str] = Form(...),
     relative_path: list[str] = Form(...),
+    assignment_type: list[str] = Form(...),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
     assignments: list[dict] = []
-    for current_zone_id, current_source_id, current_relative_path in zip(zone_id, source_id, relative_path, strict=True):
+    for current_zone_id, current_source_id, current_relative_path, current_type in zip(zone_id, source_id, relative_path, assignment_type, strict=True):
         if current_source_id.strip():
             assignments.append(
                 {
                     "zone_id": current_zone_id,
                     "source_id": int(current_source_id),
                     "relative_path": current_relative_path,
+                    "assignment_type": current_type,
                 }
             )
     set_layout_assignments(db, layout_id, assignments)
@@ -409,8 +439,8 @@ async def admin_refresh_device(
     return redirect("/admin")
 
 
-@app.get("/display/{device_id}", response_class=HTMLResponse)
-async def display_device(request: Request, device_id: str, db: Session = Depends(get_db)) -> HTMLResponse:
+@app.get("/display/{device_id}", response_model=None)
+async def display_device(request: Request, device_id: str, db: Session = Depends(get_db)) -> Response:
     device = get_or_create_device(db, device_id)
     if not device.current_layout_id:
         device = ensure_pairing_code(db, device)
@@ -425,6 +455,13 @@ async def display_device(request: Request, device_id: str, db: Session = Depends
     if not layout:
         raise HTTPException(status_code=500, detail="Assigned layout not found")
     zones = get_layout_zone_views(db, layout)
+    
+    # Check if this layout has a single redirect zone - if so, redirect immediately
+    redirect_zones = [z for z in zones if z.assignment_type == "redirect" and z.redirect_url]
+    if redirect_zones:
+        # Redirect to the first redirect zone's URL
+        return redirect(redirect_zones[0].redirect_url)
+    
     return templates.TemplateResponse(
         request,
         "display/layout.html",
@@ -516,6 +553,7 @@ async def proxy_request(target_app_id: int, path: str, request: Request, db: Ses
     parsed = urlparse(source.base_url)
     is_public_status_source = parsed.path.startswith("/status/")
     origin = f"{parsed.scheme}://{parsed.netloc}"
+    print(f"[PROXY] Source base_url: {source.base_url}, origin: {origin}, path: {path}")
     if path:
         # Asset/sub-page requests: root at origin so absolute-path assets resolve correctly
         upstream_url = f"{origin}/{path.lstrip('/')}"
@@ -547,6 +585,7 @@ async def proxy_request(target_app_id: int, path: str, request: Request, db: Ses
         "connection",
         "x-frame-options",
         "frame-options",
+        "x-frame-policy",
         "content-length",
         "keep-alive",
         "proxy-connection",
@@ -554,11 +593,12 @@ async def proxy_request(target_app_id: int, path: str, request: Request, db: Ses
     response_headers = {
         key: value
         for key, value in upstream_response.headers.items()
-        if key.lower().strip() not in excluded
+        if key.lower() not in excluded
     }
-    if "content-security-policy" in {key.lower() for key in upstream_response.headers.keys()}:
-        response_headers.pop("content-security-policy", None)
-        response_headers.pop("Content-Security-Policy", None)
+    # Remove CSP headers that would block the framed content
+    for csp_key in list(response_headers.keys()):
+        if csp_key.lower() in {"content-security-policy", "content-security-policy-report-only"}:
+            del response_headers[csp_key]
 
     location = upstream_response.headers.get("location")
     if location:

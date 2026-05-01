@@ -166,7 +166,27 @@ button:hover {
     transform: translateY(-1px);
 }
 
+.button-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 12px 18px;
+    background: linear-gradient(135deg, var(--accent), #005a9e);
+    color: white;
+    text-decoration: none;
+    transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+.button-link:hover {
+    transform: translateY(-1px);
+}
+
 button.secondary {
+    background: linear-gradient(135deg, var(--accent-2), #1177bb);
+}
+
+.button-link.secondary {
     background: linear-gradient(135deg, var(--accent-2), #1177bb);
 }
 

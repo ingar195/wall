@@ -14,3 +14,5 @@ class ZoneView:
     source_id: int | None = None
     source_name: str | None = None
     proxy_url: str | None = None
+    assignment_type: str = "embed"  # "embed" or "redirect"
+    redirect_url: str | None = None

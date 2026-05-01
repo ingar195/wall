@@ -119,6 +119,7 @@ def set_layout_assignments(db: Session, layout_id: int, assignments: list[dict])
                 zone_id=assignment["zone_id"],
                 source_id=int(assignment["source_id"]),
                 relative_path=assignment.get("relative_path", "").strip(),
+                assignment_type=assignment.get("assignment_type", "embed"),
             )
         )
     db.commit()
@@ -213,15 +214,26 @@ def get_layout_zone_views(db: Session, layout: Layout) -> list[ZoneView]:
         assignment = assignment_map.get(zone["id"])
         source = assignment.source if assignment else None
         proxy_url = None
+        redirect_url = None
+        assignment_type = "embed"
+        
         if assignment and source:
-            relative_path = assignment.relative_path.lstrip("/")
-            if not relative_path:
-                # Preserve source base path for path-based apps (e.g. /status/osc).
-                relative_path = urlparse(source.base_url).path.lstrip("/")
-            if relative_path:
-                proxy_url = f"/proxy/{source.id}/{relative_path}"
+            assignment_type = assignment.assignment_type or "embed"
+            
+            if assignment_type == "redirect":
+                # For redirects, use the full source URL
+                redirect_url = source.base_url
             else:
-                proxy_url = f"/proxy/{source.id}/"
+                # For embeds, construct proxy URL
+                relative_path = assignment.relative_path.lstrip("/")
+                if not relative_path:
+                    # Preserve source base path for path-based apps (e.g. /status/osc).
+                    relative_path = urlparse(source.base_url).path.lstrip("/")
+                if relative_path:
+                    proxy_url = f"/proxy/{source.id}/{relative_path}"
+                else:
+                    proxy_url = f"/proxy/{source.id}/"
+        
         zones.append(
             ZoneView(
                 zone_id=zone["id"],
@@ -233,6 +245,8 @@ def get_layout_zone_views(db: Session, layout: Layout) -> list[ZoneView]:
                 source_id=source.id if source else None,
                 source_name=source.name if source else None,
                 proxy_url=proxy_url,
+                assignment_type=assignment_type,
+                redirect_url=redirect_url,
             )
         )
     return zones

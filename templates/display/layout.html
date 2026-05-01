@@ -10,7 +10,12 @@
     <main class="display-grid" style="--columns: {{ layout.grid_configuration.get('columns', 1) }}; --rows: {{ layout.grid_configuration.get('rows', 1) }};">
         {% for zone in zones %}
         <section class="display-zone" style="grid-column: {{ zone.x + 1 }} / span {{ zone.w }}; grid-row: {{ zone.y + 1 }} / span {{ zone.h }};">
-            {% if zone.proxy_url %}
+            {% if zone.assignment_type == 'redirect' and zone.redirect_url %}
+            <div class="zone-placeholder">
+                <h2>{{ zone.name }}</h2>
+                <p><a href="{{ zone.redirect_url }}" target="_blank">Open {{ zone.name }}</a></p>
+            </div>
+            {% elif zone.proxy_url %}
             <iframe src="{{ zone.proxy_url }}" title="{{ zone.name }}" loading="eager" referrerpolicy="no-referrer"></iframe>
             {% else %}
             <div class="zone-placeholder">
