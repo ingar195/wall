@@ -146,6 +146,21 @@ function clampBoundsToDisplay(bounds, displayBounds) {
   };
 }
 
+function directionalShift(baseBounds, step, displayBounds) {
+  const displayCenterX = displayBounds.x + (displayBounds.width / 2);
+  const displayCenterY = displayBounds.y + (displayBounds.height / 2);
+  const zoneCenterX = baseBounds.x + (baseBounds.width / 2);
+  const zoneCenterY = baseBounds.y + (baseBounds.height / 2);
+
+  const dirX = zoneCenterX <= displayCenterX ? 1 : -1;
+  const dirY = zoneCenterY <= displayCenterY ? 1 : -1;
+
+  return {
+    x: step.x * dirX,
+    y: step.y * dirY,
+  };
+}
+
 // ── Window management ─────────────────────────────────────────────────────────
 
 function closePairingWindow() {
@@ -172,10 +187,11 @@ function applyPixelShiftToWindows() {
     if (!win || win.isDestroyed()) continue;
     const base = zoneBaseBounds.get(zoneId);
     if (!base) continue;
+    const delta = directionalShift(base, step, displayBounds);
     const shifted = clampBoundsToDisplay(
       {
-        x: base.x + step.x,
-        y: base.y + step.y,
+        x: base.x + delta.x,
+        y: base.y + delta.y,
         width: base.width,
         height: base.height,
       },
@@ -279,10 +295,11 @@ function applyLayout(data) {
     }
 
     const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
+    const delta = directionalShift(bounds, step, displayBounds);
     const shifted = clampBoundsToDisplay(
       {
-        x: bounds.x + step.x,
-        y: bounds.y + step.y,
+        x: bounds.x + delta.x,
+        y: bounds.y + delta.y,
         width: bounds.width,
         height: bounds.height,
       },
