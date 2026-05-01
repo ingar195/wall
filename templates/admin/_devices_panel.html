@@ -1,0 +1,58 @@
+<article class="panel" id="devices-panel">
+    <div class="panel-header">
+        <h2>Devices</h2>
+        <form method="post" action="/admin/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="ghost">Log Out</button>
+        </form>
+    </div>
+    <div class="table-like">
+        {% for device in devices %}
+        <div class="table-row single-column">
+            <form method="post" action="/admin/devices/{{ device.id }}/update" class="stack-form inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="form-grid two-up compact-gap">
+                    <label>
+                        <span>Name</span>
+                        <input type="text" name="device_name" value="{{ device.name }}" required>
+                    </label>
+                    <label>
+                        <span>Layout ID</span>
+                        <input type="number" name="layout_id" value="{{ device.current_layout_id or '' }}" placeholder="Unassigned">
+                    </label>
+                </div>
+                <div class="inline-actions split-actions">
+                    <div>
+                        <strong>{{ device.id }}</strong>
+                        <span class="status-chip status-{{ device.status }}">{{ device.status }}</span>
+                        {% if device.pairing_code %}
+                        <p class="muted">Pending code: {{ device.pairing_code }}</p>
+                        {% endif %}
+                    </div>
+                    <div class="inline-actions">
+                        <button type="submit">Save</button>
+                    </div>
+                </div>
+            </form>
+            <div class="inline-actions action-row">
+                <form
+                    method="post"
+                    action="/admin/devices/{{ device.id }}/refresh"
+                    hx-post="/admin/devices/{{ device.id }}/refresh"
+                    hx-target="#devices-panel"
+                    hx-swap="outerHTML"
+                >
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="secondary">Force Refresh</button>
+                </form>
+                <form method="post" action="/admin/devices/{{ device.id }}/delete">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="danger">Delete</button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <p class="muted">No devices have connected yet.</p>
+        {% endfor %}
+    </div>
+</article>

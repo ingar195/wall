@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+
+{% block title %}Admin | DisplayManager{% endblock %}
+
+{% block body %}
+<main class="admin-layout">
+    <section class="hero-card">
+        <div>
+            <p class="eyebrow">DisplayManager V1</p>
+            <h1>Digital signage control plane</h1>
+            <p class="lede">Manage authenticated content sources, layouts, and unattended screens from one place.</p>
+        </div>
+        <div class="hero-stats">
+            <article>
+                <strong>{{ devices|length }}</strong>
+                <span>Devices</span>
+            </article>
+            <article>
+                <strong>{{ layouts|length }}</strong>
+                <span>Layouts</span>
+            </article>
+            <article>
+                <strong>{{ sources|length }}</strong>
+                <span>Sources</span>
+            </article>
+        </div>
+    </section>
+
+    <section class="grid-two">
+        <article class="panel">
+            <h2>Add Content Source</h2>
+            <form method="post" action="/admin/sources" class="stack-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label>
+                    <span>Name</span>
+                    <input type="text" name="name" placeholder="Grafana Prod" required>
+                </label>
+                <label>
+                    <span>Base URL</span>
+                    <input type="url" name="base_url" placeholder="https://grafana.example.com" required>
+                </label>
+                <label>
+                    <span>API Token (Optional)</span>
+                    <textarea name="api_token" rows="4" placeholder="Leave blank for public URLs"></textarea>
+                </label>
+                <button type="submit">Save Source</button>
+            </form>
+        </article>
+
+        <article class="panel">
+            <h2>Create Layout</h2>
+            <form method="post" action="/admin/layouts" class="stack-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label>
+                    <span>Name</span>
+                    <input type="text" name="name" placeholder="Full Screen" required>
+                </label>
+                <label>
+                    <span>Grid Configuration JSON</span>
+                    <textarea name="grid_configuration" rows="8" placeholder='{"columns":1,"rows":1,"zones":[{"id":"main","name":"Main","x":0,"y":0,"w":1,"h":1}]}'></textarea>
+                </label>
+                <button type="submit">Save Layout</button>
+            </form>
+        </article>
+    </section>
+
+    <section class="grid-two">
+        <article class="panel">
+            <h2>Pair Device</h2>
+            <form method="post" action="/admin/devices/pair" class="stack-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label>
+                    <span>Pairing Code</span>
+                    <input type="text" name="pairing_code" minlength="4" maxlength="4" placeholder="0412" required>
+                </label>
+                <label>
+                    <span>Device Name</span>
+                    <input type="text" name="device_name" placeholder="Lobby Screen" required>
+                </label>
+                <label>
+                    <span>Assign Layout</span>
+                    <select name="layout_id">
+                        <option value="">Unassigned</option>
+                        {% for layout in layouts %}
+                        <option value="{{ layout.id }}">{{ layout.name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <button type="submit">Pair Device</button>
+            </form>
+        </article>
+
+        <article class="panel">
+            <h2>Assign Sources To Layout</h2>
+            <p class="muted">Configure each zone directly instead of pasting assignment JSON.</p>
+            {% for row in layout_editor_rows %}
+            <form method="post" action="/admin/layouts/{{ row.layout.id }}/assignments" class="stack-form assignment-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <h3>{{ row.layout.name }}</h3>
+                <div class="zone-stack">
+                    {% for zone in row.zones %}
+                    <section class="zone-editor-card">
+                        <input type="hidden" name="zone_id" value="{{ zone.id }}">
+                        <div class="zone-editor-head">
+                            <strong>{{ zone.name }}</strong>
+                            <span class="muted">{{ zone.id }}</span>
+                        </div>
+                        <div class="form-grid two-up compact-gap">
+                            <label>
+                                <span>Source</span>
+                                <select name="source_id">
+                                    <option value="">Unassigned</option>
+                                    {% for source in sources %}
+                                    <option value="{{ source.id }}" {% if zone.assignment and zone.assignment.source_id == source.id %}selected{% endif %}>{{ source.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </label>
+                            <label>
+                                <span>Relative Path</span>
+                                <input type="text" name="relative_path" value="{{ zone.assignment.relative_path if zone.assignment else '' }}" placeholder="Leave blank to use source URL path">
+                            </label>
+                        </div>
+                    </section>
+                    {% endfor %}
+                </div>
+                <button type="submit">Update Assignments</button>
+            </form>
+            {% else %}
+            <p class="muted">No layouts yet.</p>
+            {% endfor %}
+        </article>
+    </section>
+
+    <section class="grid-two">
+        <section hx-get="/admin/partials/devices" hx-trigger="load, every 10s" hx-swap="outerHTML">
+            {% include "admin/_devices_panel.html" %}
+        </section>
+
+        <article class="panel">
+            <h2>Content Sources</h2>
+            <div class="table-like compact-list">
+                {% for source in sources %}
+                <div class="table-row single-column source-card">
+                    <form method="post" action="/admin/sources/{{ source.id }}/update" class="stack-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <div class="form-grid two-up compact-gap">
+                            <label>
+                                <span>Name</span>
+                                <input type="text" name="name" value="{{ source.name }}" required>
+                            </label>
+                            <label>
+                                <span>Base URL</span>
+                                <input type="url" name="base_url" value="{{ source.base_url }}" required>
+                            </label>
+                        </div>
+                        <label>
+                            <span>Replace Token</span>
+                            <input type="password" name="api_token" placeholder="Leave blank to clear token for public URLs">
+                        </label>
+                        <button type="submit">Save</button>
+                    </form>
+                    <div class="inline-actions action-row">
+                        <form method="post" action="/admin/sources/{{ source.id }}/delete">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="danger">Delete</button>
+                        </form>
+                    </div>
+                </div>
+                {% else %}
+                <p class="muted">No sources configured.</p>
+                {% endfor %}
+            </div>
+
+            <h2>Layouts</h2>
+            <div class="table-like compact-list">
+                {% for layout in layouts %}
+                <div class="table-row single-column source-card">
+                    <form method="post" action="/admin/layouts/{{ layout.id }}/update" class="stack-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <label>
+                            <span>Name</span>
+                            <input type="text" name="name" value="{{ layout.name }}" required>
+                        </label>
+                        <label>
+                            <span>Grid Configuration JSON</span>
+                            <textarea name="grid_configuration" rows="7" required>{{ layout.grid_configuration | tojson(indent=2) }}</textarea>
+                        </label>
+                        <button type="submit">Save</button>
+                    </form>
+                    <div class="inline-actions action-row">
+                        <form method="post" action="/admin/layouts/{{ layout.id }}/delete">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="danger">Delete</button>
+                        </form>
+                    </div>
+                </div>
+                {% else %}
+                <p class="muted">No layouts configured.</p>
+                {% endfor %}
+            </div>
+        </article>
+    </section>
+
+    <section>
+        <article class="panel">
+            <h2>Audit Log</h2>
+            <div class="table-like compact-list">
+                {% for log in audit_logs %}
+                <div class="table-row single-column">
+                    <strong>{{ log.action }}</strong>
+                    <p class="muted">{{ log.actor }} at {{ log.created_at }}</p>
+                    <p>{{ log.details }}</p>
+                </div>
+                {% else %}
+                <p class="muted">No admin actions recorded yet.</p>
+                {% endfor %}
+            </div>
+        </article>
+    </section>
+</main>
+{% endblock %}

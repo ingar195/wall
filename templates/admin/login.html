@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Login | DisplayManager{% endblock %}
+
+{% block body %}
+<main class="login-shell">
+    <section class="panel login-card">
+        <p class="eyebrow">DisplayManager V1</p>
+        <h1>Admin Sign In</h1>
+        <p class="muted">Use the configured admin password to access the control plane.</p>
+        {% if error %}
+        <p class="error-banner">Incorrect password.</p>
+        {% endif %}
+        <form method="post" action="/admin/login" class="stack-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>
+                <span>Password</span>
+                <input type="password" name="password" autocomplete="current-password" required>
+            </label>
+            <button type="submit">Sign In</button>
+        </form>
+    </section>
+</main>
+{% endblock %}

@@ -1,0 +1,364 @@
+:root {
+    --bg: #1e1e1e;
+    --panel: #252526;
+    --panel-border: #3c3c3c;
+    --text: #cccccc;
+    --muted: #9da0a6;
+    --accent: #007acc;
+    --accent-2: #0e639c;
+    --danger: #f14c4c;
+    --success: #4ec9b0;
+    --shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
+    --radius: 24px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    color: var(--text);
+    font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+    background:
+        radial-gradient(circle at top left, rgba(0, 122, 204, 0.12), transparent 36%),
+        linear-gradient(165deg, #181818 0%, #1e1e1e 50%, #252526 100%);
+    min-height: 100vh;
+}
+
+.app-shell {
+    padding: 32px;
+}
+
+.admin-layout {
+    display: grid;
+    gap: 24px;
+}
+
+.login-shell {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+}
+
+.login-card {
+    width: min(100%, 460px);
+}
+
+.hero-card,
+.panel,
+.pairing-card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(12px);
+}
+
+.hero-card {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr;
+    gap: 24px;
+    padding: 28px;
+}
+
+.hero-card h1,
+.panel h2,
+.pairing-card h1 {
+    margin: 0 0 12px;
+}
+
+.hero-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+.hero-stats article,
+.table-row {
+    border: 1px solid #3c3c3c;
+    border-radius: 18px;
+    background: #2d2d30;
+}
+
+.hero-stats article {
+    display: grid;
+    place-items: center;
+    min-height: 110px;
+}
+
+.hero-stats strong {
+    font-size: 2rem;
+}
+
+.grid-two {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+}
+
+.panel {
+    padding: 24px;
+}
+
+.stack-form {
+    display: grid;
+    gap: 14px;
+}
+
+.form-grid {
+    display: grid;
+    gap: 14px;
+}
+
+.two-up {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compact-gap {
+    gap: 10px;
+}
+
+label {
+    display: grid;
+    gap: 6px;
+}
+
+input,
+textarea,
+select,
+button {
+    font: inherit;
+}
+
+input,
+textarea,
+select {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 14px;
+    color: var(--text);
+    border: 1px solid #3c3c3c;
+    background: #1f1f1f;
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: #858585;
+}
+
+textarea {
+    resize: vertical;
+}
+
+button {
+    border: 0;
+    border-radius: 999px;
+    padding: 12px 18px;
+    background: linear-gradient(135deg, var(--accent), #005a9e);
+    color: white;
+    cursor: pointer;
+    transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+button:hover {
+    transform: translateY(-1px);
+}
+
+button.secondary {
+    background: linear-gradient(135deg, var(--accent-2), #1177bb);
+}
+
+button.danger {
+    background: linear-gradient(135deg, var(--danger), #cd3131);
+}
+
+button.ghost {
+    background: #3a3d41;
+    color: var(--text);
+}
+
+.table-like {
+    display: grid;
+    gap: 12px;
+}
+
+.panel-header,
+.inline-actions,
+.split-actions,
+.zone-editor-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.panel-header,
+.split-actions {
+    justify-content: space-between;
+}
+
+.table-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+}
+
+.single-column {
+    grid-template-columns: 1fr;
+}
+
+.compact-list pre {
+    margin: 10px 0 0;
+    padding: 12px;
+    overflow: auto;
+    border-radius: 14px;
+    background: #1e1e1e;
+    border: 1px solid #3c3c3c;
+}
+
+.eyebrow {
+    margin: 0 0 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    font-size: 0.8rem;
+}
+
+.lede,
+.muted {
+    color: var(--muted);
+}
+
+.status-chip {
+    display: inline-flex;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 0.88rem;
+    text-transform: capitalize;
+}
+
+.status-online {
+    color: white;
+    background: var(--success);
+}
+
+.status-offline {
+    color: white;
+    background: var(--danger);
+}
+
+.assignment-form {
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid #3c3c3c;
+}
+
+.zone-stack {
+    display: grid;
+    gap: 12px;
+}
+
+.zone-editor-card,
+.source-card,
+.inline-form {
+    padding: 16px;
+    border: 1px solid #3c3c3c;
+    border-radius: 18px;
+    background: #252526;
+}
+
+.error-banner {
+    margin: 0;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: rgba(241, 76, 76, 0.16);
+    color: var(--danger);
+}
+
+.display-shell {
+    overflow: hidden;
+    background: #101416;
+    color: white;
+}
+
+.display-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
+    grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+    gap: 10px;
+    width: 100vw;
+    height: 100vh;
+    padding: 10px;
+}
+
+.display-zone {
+    min-width: 0;
+    min-height: 0;
+    background: #0d1114;
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.display-zone iframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: white;
+}
+
+.zone-placeholder,
+.pairing-card {
+    display: grid;
+    place-items: center;
+    text-align: center;
+}
+
+.zone-placeholder {
+    width: 100%;
+    height: 100%;
+    padding: 24px;
+}
+
+.pairing-screen {
+    display: grid;
+    place-items: center;
+    padding: 24px;
+}
+
+.pairing-card {
+    min-width: min(92vw, 620px);
+    padding: 48px;
+    color: var(--text);
+}
+
+.pairing-code {
+    margin: 18px 0;
+    font-size: clamp(4rem, 14vw, 8rem);
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    color: var(--accent-2);
+}
+
+@media (max-width: 900px) {
+    .app-shell {
+        padding: 18px;
+    }
+
+    .grid-two,
+    .hero-card,
+    .two-up {
+        grid-template-columns: 1fr;
+    }
+
+    .table-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+.action-row {
+    justify-content: flex-end;
+}

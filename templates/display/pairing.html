@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pair Device</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="display-shell pairing-screen">
+    <main class="pairing-card">
+        <p class="eyebrow">DisplayManager V1</p>
+        <h1>Pair this screen</h1>
+        <div class="pairing-code">{{ device.pairing_code }}</div>
+        <p>Enter this code in the admin dashboard to register <strong>{{ device.id }}</strong>.</p>
+        <p class="muted">The code refreshes automatically if it expires.</p>
+    </main>
+
+    <script>
+        setTimeout(() => window.location.reload(), 60000);
+    </script>
+</body>
+</html>
