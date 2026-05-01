@@ -118,8 +118,8 @@
                             <label>
                                 <span>Type</span>
                                 <select name="assignment_type">
-                                    <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% elif not zone.assignment %}selected{% endif %}>Embed (iframe)</option>
-                                    <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% endif %}>Redirect</option>
+                                    <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% elif not zone.assignment %}selected{% endif %}>Embed (for browsers)</option>
+                                    <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% endif %}>Redirect (for electron)</option>
                                 </select>
                             </label>
                             <label>

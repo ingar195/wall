@@ -76,14 +76,26 @@ function getDeviceId() {
 const DEVICE_ID = getDeviceId();
 const API_URL = `${SERVER_BASE}/api/device/${encodeURIComponent(DEVICE_ID)}`;
 const WS_URL = SERVER_BASE.replace(/^http/, "ws") + `/ws/device/${encodeURIComponent(DEVICE_ID)}`;
+const PIXEL_SHIFT_PX = 20;
+const PIXEL_SHIFT_INTERVAL_MS = 30 * 1000;
+const PIXEL_SHIFT_STEPS = [
+  { x: 0, y: 0 },
+  { x: PIXEL_SHIFT_PX, y: 0 },
+  { x: 0, y: PIXEL_SHIFT_PX },
+  { x: PIXEL_SHIFT_PX, y: PIXEL_SHIFT_PX },
+];
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
 /** @type {Map<string, BrowserWindow>} */
 let zoneWindows = new Map();
+/** @type {Map<string, {x:number,y:number,width:number,height:number}>} */
+let zoneBaseBounds = new Map();
 let pairingWindow = null;
 let wsClient = null;
 let pollTimer = null;
+let pixelShiftTimer = null;
+let pixelShiftStepIndex = 0;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -121,6 +133,19 @@ function gridToPixelBounds(zone, columns, rows, displayBounds) {
   };
 }
 
+function clampBoundsToDisplay(bounds, displayBounds) {
+  const minX = displayBounds.x;
+  const minY = displayBounds.y;
+  const maxX = displayBounds.x + displayBounds.width - bounds.width;
+  const maxY = displayBounds.y + displayBounds.height - bounds.height;
+  return {
+    x: Math.max(minX, Math.min(bounds.x, maxX)),
+    y: Math.max(minY, Math.min(bounds.y, maxY)),
+    width: bounds.width,
+    height: bounds.height,
+  };
+}
+
 // ── Window management ─────────────────────────────────────────────────────────
 
 function closePairingWindow() {
@@ -137,6 +162,37 @@ function closeZoneWindows() {
     }
   }
   zoneWindows.clear();
+  zoneBaseBounds.clear();
+}
+
+function applyPixelShiftToWindows() {
+  const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
+  const displayBounds = screen.getPrimaryDisplay().bounds;
+  for (const [zoneId, win] of zoneWindows.entries()) {
+    if (!win || win.isDestroyed()) continue;
+    const base = zoneBaseBounds.get(zoneId);
+    if (!base) continue;
+    const shifted = clampBoundsToDisplay(
+      {
+        x: base.x + step.x,
+        y: base.y + step.y,
+        width: base.width,
+        height: base.height,
+      },
+      displayBounds
+    );
+    win.setBounds(shifted, false);
+  }
+}
+
+function startPixelShiftLoop() {
+  if (pixelShiftTimer) {
+    clearInterval(pixelShiftTimer);
+  }
+  pixelShiftTimer = setInterval(() => {
+    pixelShiftStepIndex = (pixelShiftStepIndex + 1) % PIXEL_SHIFT_STEPS.length;
+    applyPixelShiftToWindows();
+  }, PIXEL_SHIFT_INTERVAL_MS);
 }
 
 function ensurePairingWindow() {
@@ -152,7 +208,7 @@ function ensurePairingWindow() {
     frame: false,
     kiosk: WALL_KIOSK,
     autoHideMenuBar: true,
-    backgroundColor: "#101416",
+    backgroundColor: "#000000",
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -186,6 +242,7 @@ function applyLayout(data) {
     nextIds.add(zoneId);
 
     const bounds = gridToPixelBounds(zone, layout.columns, layout.rows, displayBounds);
+    zoneBaseBounds.set(zoneId, bounds);
     let win = zoneWindows.get(zoneId);
     if (!win || win.isDestroyed()) {
       win = new BrowserWindow({
@@ -205,7 +262,7 @@ function applyLayout(data) {
         skipTaskbar: true,
         alwaysOnTop: true,
         autoHideMenuBar: true,
-        backgroundColor: "#101416",
+        backgroundColor: "#000000",
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true,
@@ -221,7 +278,17 @@ function applyLayout(data) {
       zoneWindows.set(zoneId, win);
     }
 
-    win.setBounds(bounds, false);
+    const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
+    const shifted = clampBoundsToDisplay(
+      {
+        x: bounds.x + step.x,
+        y: bounds.y + step.y,
+        width: bounds.width,
+        height: bounds.height,
+      },
+      displayBounds
+    );
+    win.setBounds(shifted, false);
     const currentUrl = win.webContents.getURL();
     if (currentUrl !== zone.url) {
       win.loadURL(zone.url);
@@ -233,6 +300,7 @@ function applyLayout(data) {
 
   for (const [existingId, existingWindow] of zoneWindows.entries()) {
     if (!nextIds.has(existingId)) {
+      zoneBaseBounds.delete(existingId);
       if (!existingWindow.isDestroyed()) {
         existingWindow.close();
       }
@@ -313,11 +381,16 @@ app.whenReady().then(() => {
   globalShortcut.register("Escape", () => app.quit());
   globalShortcut.register("Control+Q", () => app.quit());
 
+  startPixelShiftLoop();
   loadLayout();
   connectWebSocket();
 });
 
 app.on("will-quit", () => {
+  if (pixelShiftTimer) {
+    clearInterval(pixelShiftTimer);
+    pixelShiftTimer = null;
+  }
   globalShortcut.unregisterAll();
   closePairingWindow();
   closeZoneWindows();

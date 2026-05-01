@@ -7,13 +7,28 @@
     let socket;
     let reconnectDelay = 1000;
     let disconnectSince = null;
+    let shiftStepIndex = 0;
+    const shiftSteps = [
+        { x: 0, y: 0 },
+        { x: 20, y: 0 },
+        { x: 0, y: 20 },
+        { x: 20, y: 20 },
+    ];
 
     function schedulePixelShift() {
+        const shiftTarget = document.querySelector(".display-grid") || document.body;
+        // Reserve a 20px safe margin so shifting never pushes content off-screen.
+        if (shiftTarget.classList && shiftTarget.classList.contains("display-grid")) {
+            shiftTarget.style.width = "calc(100vw - 40px)";
+            shiftTarget.style.height = "calc(100vh - 40px)";
+            shiftTarget.style.margin = "20px";
+        }
+        shiftTarget.style.transition = "transform 220ms ease";
         setInterval(() => {
-            const x = Math.floor(Math.random() * 11) - 5;
-            const y = Math.floor(Math.random() * 11) - 5;
-            document.body.style.transform = `translate(${x}px, ${y}px)`;
-        }, 15 * 60 * 1000);
+            shiftStepIndex = (shiftStepIndex + 1) % shiftSteps.length;
+            const { x, y } = shiftSteps[shiftStepIndex];
+            shiftTarget.style.transform = `translate(${x}px, ${y}px)`;
+        }, 30 * 1000);
     }
 
     function connect() {
