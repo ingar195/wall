@@ -17,8 +17,13 @@
                         <input type="text" name="device_name" value="{{ device.name }}" required>
                     </label>
                     <label>
-                        <span>Layout ID</span>
-                        <input type="number" name="layout_id" value="{{ device.current_layout_id or '' }}" placeholder="Unassigned">
+                        <span>Layout</span>
+                        <select name="layout_id">
+                            <option value="">Unassigned</option>
+                            {% for layout in layouts %}
+                            <option value="{{ layout.id }}" {% if device.current_layout_id == layout.id %}selected{% endif %}>{{ layout.name }}</option>
+                            {% endfor %}
+                        </select>
                     </label>
                 </div>
                 <div class="inline-actions split-actions">

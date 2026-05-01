@@ -51,6 +51,96 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 chromium-browser --kiosk --incognito --disable-infobars --disable-session-crashed-bubble --overscroll-history-navigation=0 http://<server-ip>:8000/display/<device_id>
 ```
 
+## Electron Client (Native Multi-Window)
+
+The optional Electron client runs each layout zone as a native browser window (no iframe), which is useful for sites that block framing.
+
+1. Go to the Electron folder:
+
+```bash
+cd electron
+```
+
+2. Install dependencies:
+
+```bash
+npm install
+```
+
+3. Edit `config.json`:
+
+```json
+{
+	"server": "https://test.angry.fish",
+	"kiosk": true,
+	"displayMode": "primary",
+	"displayIds": [],
+	"resolution": {
+		"x": null,
+		"y": null,
+		"width": null,
+		"height": null
+	}
+}
+```
+
+4. Start Electron:
+
+```bash
+npm start
+```
+
+### Electron Display Settings
+
+- `displayMode`: `primary` or `span`
+- `displayIds`: optional monitor IDs to target; empty list means all detected displays for `span`
+- `resolution.x` and `resolution.y`: optional pixel offset for the top-left corner of the window canvas; set to `null` to use the detected display origin
+- `resolution.width` and `resolution.height`: optional virtual canvas override; set to `null` to use detected display bounds
+
+Examples:
+
+- Single monitor automatic bounds:
+
+```json
+{
+	"displayMode": "primary",
+	"displayIds": [],
+	"resolution": { "x": null, "y": null, "width": null, "height": null }
+}
+```
+
+- Span multiple monitors using detected total bounds:
+
+```json
+{
+	"displayMode": "span",
+	"displayIds": [],
+	"resolution": { "x": null, "y": null, "width": null, "height": null }
+}
+```
+
+- Span monitors with fixed startup canvas:
+
+```json
+{
+	"displayMode": "span",
+	"displayIds": [],
+	"resolution": { "x": 0, "y": 0, "width": 3840, "height": 1080 }
+}
+```
+
+- Fixed position on a secondary monitor at a specific offset:
+
+```json
+{
+	"displayMode": "primary",
+	"displayIds": [],
+	"resolution": { "x": 1920, "y": 0, "width": 1920, "height": 1080 }
+}
+```
+
+You can also override these with environment variables: `WALL_DISPLAY_MODE`, `WALL_DISPLAY_IDS`, `WALL_X`, `WALL_Y`, `WALL_WIDTH`, `WALL_HEIGHT`.
+
 ## Workflow
 
 1. Add a content source in the admin dashboard.

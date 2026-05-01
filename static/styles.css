@@ -270,10 +270,27 @@ button.ghost {
     background: var(--danger);
 }
 
-.assignment-form {
+.layout-assignment-card {
     margin-top: 18px;
-    padding-top: 18px;
-    border-top: 1px solid #3c3c3c;
+    border: 1px solid var(--panel-border);
+    border-radius: 18px;
+    overflow: hidden;
+}
+
+.layout-assignment-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 18px;
+    background: #2d2d30;
+    border-bottom: 1px solid var(--panel-border);
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.03em;
+    color: var(--text);
+}
+
+.assignment-form {
+    padding: 16px 18px 18px;
 }
 
 .zone-stack {
@@ -381,4 +398,44 @@ button.ghost {
 
 .action-row {
     justify-content: flex-end;
+}
+
+/* Tabs */
+.tab-bar {
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid var(--panel-border);
+    padding-bottom: 0;
+}
+
+.tab-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 12px 12px 0 0;
+    color: var(--muted);
+    padding: 10px 22px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    transition: color 0.15s, background 0.15s;
+    transform: none;
+    position: relative;
+    bottom: -1px;
+}
+
+.tab-btn:hover {
+    color: var(--text);
+    background: var(--panel);
+    transform: none;
+}
+
+.tab-btn.active {
+    color: var(--text);
+    background: var(--panel);
+    border-color: var(--panel-border);
+    border-bottom-color: var(--panel);
+}
+
+.tab-panel.hidden {
+    display: none;
 }

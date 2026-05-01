@@ -1,4 +1,12 @@
 {
-  "server": "http://localhost:8000",
-  "kiosk": true
+  "server": "https://test.angry.fish",
+  "kiosk": true,
+  "displayMode": "primary",
+  "displayIds": [],
+  "resolution": {
+    "x": null,
+    "y": null,
+    "width": null,
+    "height": null
+  }
 }

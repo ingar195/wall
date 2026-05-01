@@ -33,7 +33,7 @@ if not exist "node_modules\electron\dist\electron.exe" (
 )
 
 REM Optional overrides
-set WALL_SERVER=https://test.angry.fish
+REM set WALL_SERVER=https://test.angry.fish
 REM set WALL_KIOSK=0
 
 echo Starting Wall Display...

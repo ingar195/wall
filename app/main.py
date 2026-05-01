@@ -160,7 +160,11 @@ def render_devices_panel(request: Request, db: Session) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "admin/_devices_panel.html",
-        {"devices": list_devices(db), "csrf_token": get_or_create_csrf_token(request)},
+        {
+            "devices": list_devices(db),
+            "layouts": db.scalars(select(Layout).order_by(Layout.name)).all(),
+            "csrf_token": get_or_create_csrf_token(request),
+        },
     )
 
 
