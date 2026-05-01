@@ -439,6 +439,50 @@ async def admin_refresh_device(
     return redirect("/admin")
 
 
+@app.get("/api/device/{device_id}")
+async def api_device_layout(device_id: str, request: Request, db: Session = Depends(get_db)) -> dict:
+    """JSON endpoint consumed by the Electron display client."""
+    device = get_or_create_device(db, device_id)
+    if not device.current_layout_id:
+        device = ensure_pairing_code(db, device)
+        return {
+            "status": "unpaired",
+            "device_id": device.id,
+            "pairing_code": device.pairing_code,
+        }
+
+    device = mark_device_seen(db, device_id)
+    layout = db.scalars(select(Layout).where(Layout.id == device.current_layout_id)).first()
+    if not layout:
+        raise HTTPException(status_code=500, detail="Assigned layout not found")
+
+    zones = get_layout_zone_views(db, layout)
+    base = str(request.base_url).rstrip("/")
+    return {
+        "status": "paired",
+        "device_id": device.id,
+        "device_name": device.name,
+        "layout": {
+            "id": layout.id,
+            "name": layout.name,
+            "columns": layout.grid_configuration.get("columns", 1),
+            "rows": layout.grid_configuration.get("rows", 1),
+        },
+        "zones": [
+            {
+                "id": zone.zone_id,
+                "name": zone.name,
+                "x": zone.x,
+                "y": zone.y,
+                "w": zone.w,
+                "h": zone.h,
+                "url": zone.redirect_url or (base + zone.proxy_url if zone.proxy_url else None),
+            }
+            for zone in zones
+        ],
+    }
+
+
 @app.get("/display/{device_id}", response_model=None)
 async def display_device(request: Request, device_id: str, db: Session = Depends(get_db)) -> Response:
     device = get_or_create_device(db, device_id)
