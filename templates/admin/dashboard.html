@@ -257,8 +257,8 @@
                                 <label>
                                     <span>Type</span>
                                     <select name="assignment_type">
-                                        <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% elif not zone.assignment %}selected{% endif %}>Embed (http)</option>
-                                        <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% endif %}>Redirect (https)</option>
+                                        <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% elif not zone.assignment %}selected{% endif %}>Redirect (https)</option>
+                                        <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% endif %}>Embed (http)</option>
                                     </select>
                                 </label>
                                 <label>

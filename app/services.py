@@ -187,7 +187,7 @@ def set_layout_assignments(db: Session, layout_id: int, assignments: list[dict])
                 zone_id=assignment["zone_id"],
                 source_id=int(assignment["source_id"]),
                 relative_path=assignment.get("relative_path", "").strip(),
-                assignment_type=assignment.get("assignment_type", "embed"),
+                assignment_type=assignment.get("assignment_type", "redirect"),
             )
         )
     db.commit()
@@ -283,10 +283,10 @@ def get_layout_zone_views(db: Session, layout: Layout) -> list[ZoneView]:
         source = assignment.source if assignment else None
         proxy_url = None
         redirect_url = None
-        assignment_type = "embed"
+        assignment_type = "redirect"
         
         if assignment and source:
-            assignment_type = assignment.assignment_type or "embed"
+            assignment_type = assignment.assignment_type or "redirect"
             
             if assignment_type == "redirect":
                 # For redirects, use the full source URL
