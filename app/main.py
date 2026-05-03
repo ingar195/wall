@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import re
 import secrets
@@ -11,6 +12,7 @@ import asyncio
 import httpx
 import websockets
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
+from typing import List
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -36,6 +38,7 @@ from app.services import (
     get_layout_zone_views,
     get_or_create_device,
     get_source_token,
+    is_layout_active_now,
     mark_device_seen,
     pair_device,
     set_layout_assignments,
@@ -46,6 +49,23 @@ from app.services import (
 from app.websocket_hub import manager
 
 
+logger = logging.getLogger("display_manager")
+
+
+def validate_runtime_settings() -> None:
+    if not settings.is_production:
+        return
+
+    if not settings.encryption_key:
+        raise RuntimeError("ENCRYPTION_KEY must be configured in production")
+
+    if settings.admin_password in {"", "change-me"}:
+        raise RuntimeError("ADMIN_PASSWORD must be changed from default in production")
+
+    if settings.session_secret in {"", "change-me-session-secret", "dev-session-secret"}:
+        raise RuntimeError("SESSION_SECRET must be changed from default in production")
+
+
 def initialize_database_schema() -> None:
     try:
         Base.metadata.create_all(bind=engine)
@@ -54,11 +74,38 @@ def initialize_database_schema() -> None:
         # the table while another is still in DDL. Ignore only this known case.
         if "already exists" not in str(exc).lower():
             raise
+    # Migrate existing databases by adding schedule columns if they don't exist yet.
+    _migrate_add_schedule_columns()
+
+
+def _migrate_add_schedule_columns() -> None:
+    from sqlalchemy import text
+    migrations = [
+        ("schedule_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("schedule_start", "VARCHAR(5)"),
+        ("schedule_end", "VARCHAR(5)"),
+        ("schedule_days", "JSON"),
+    ]
+    with engine.begin() as conn:
+        for col, col_type in migrations:
+            try:
+                conn.execute(text(f"ALTER TABLE layouts ADD COLUMN {col} {col_type}"))
+            except Exception:
+                pass  # Column already exists
 
 
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
     """Middleware to handle X-Forwarded headers from reverse proxy"""
+
+    def __init__(self, app, trusted_proxy_ips: list[str]):
+        super().__init__(app)
+        self.trusted_proxy_ips = set(trusted_proxy_ips)
+
     async def dispatch(self, request: Request, call_next):
+        client_host = (request.client.host if request.client else "") or ""
+        if client_host not in self.trusted_proxy_ips:
+            return await call_next(request)
+
         # Get forwarded headers
         forwarded_proto = request.headers.get("x-forwarded-proto", "http")
         forwarded_host = request.headers.get("x-forwarded-host")
@@ -68,7 +115,11 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
         if forwarded_proto:
             request.scope["scheme"] = forwarded_proto
         if forwarded_host:
-            request.scope["server"] = (forwarded_host.split(":")[0], int(forwarded_host.split(":")[-1]) if ":" in forwarded_host else (443 if forwarded_proto == "https" else 80))
+            host, _, port = forwarded_host.rpartition(":")
+            if host and port.isdigit():
+                request.scope["server"] = (host, int(port))
+            else:
+                request.scope["server"] = (forwarded_host, 443 if forwarded_proto == "https" else 80)
         if forwarded_for:
             # Get the client IP (first IP in the list if multiple)
             client_ip = forwarded_for.split(",")[0].strip()
@@ -79,6 +130,7 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_runtime_settings()
     initialize_database_schema()
     app.state.http_client = httpx.AsyncClient(
         follow_redirects=False,
@@ -94,9 +146,9 @@ app = FastAPI(title="DisplayManager V1", lifespan=lifespan)
 # Add session middleware first (will be applied last, so runs last)
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 # Trust proxy headers for HTTPS behind reverse proxy
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
 # Proxy headers middleware must run first to update scope
-app.add_middleware(ProxyHeadersMiddleware)
+app.add_middleware(ProxyHeadersMiddleware, trusted_proxy_ips=settings.trusted_proxy_ips)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -285,12 +337,24 @@ async def admin_create_layout(
     request: Request,
     name: str = Form(...),
     grid_configuration: str = Form(""),
+    schedule_enabled: bool = Form(False),
+    schedule_start: str = Form(""),
+    schedule_end: str = Form(""),
+    schedule_days: List[int] = Form(default=[]),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
-    layout = create_layout(db, name=name, grid_configuration=grid_configuration)
+    layout = create_layout(
+        db,
+        name=name,
+        grid_configuration=grid_configuration,
+        schedule_enabled=schedule_enabled,
+        schedule_start=schedule_start or None,
+        schedule_end=schedule_end or None,
+        schedule_days=schedule_days or None,
+    )
     audit(request, db, "layout.create", f"Created layout {layout.name} ({layout.id})")
     return redirect("/admin")
 
@@ -301,6 +365,10 @@ async def admin_update_layout(
     layout_id: int,
     name: str = Form(...),
     grid_configuration: str = Form(""),
+    schedule_enabled: bool = Form(False),
+    schedule_start: str = Form(""),
+    schedule_end: str = Form(""),
+    schedule_days: List[int] = Form(default=[]),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
@@ -309,7 +377,16 @@ async def admin_update_layout(
     layout = db.get(Layout, layout_id)
     if not layout:
         raise HTTPException(status_code=404, detail="Unknown layout")
-    update_layout(db, layout, name=name, grid_configuration=grid_configuration)
+    update_layout(
+        db,
+        layout,
+        name=name,
+        grid_configuration=grid_configuration,
+        schedule_enabled=schedule_enabled,
+        schedule_start=schedule_start or None,
+        schedule_end=schedule_end or None,
+        schedule_days=schedule_days or None,
+    )
     audit(request, db, "layout.update", f"Updated layout {layout.name} ({layout.id})")
     assigned_devices = db.scalars(select(Device).where(Device.current_layout_id == layout.id)).all()
     for device in assigned_devices:
@@ -460,6 +537,15 @@ async def api_device_layout(device_id: str, request: Request, db: Session = Depe
     if not layout:
         raise HTTPException(status_code=500, detail="Assigned layout not found")
 
+    # If the layout has a schedule and we are currently outside its window, tell
+    # the display to show a blank screen rather than stale content.
+    if not is_layout_active_now(layout):
+        return {
+            "status": "scheduled_off",
+            "device_id": device.id,
+            "device_name": device.name,
+        }
+
     zones = get_layout_zone_views(db, layout)
     base = str(request.base_url).rstrip("/")
     return {
@@ -601,7 +687,7 @@ async def proxy_request(target_app_id: int, path: str, request: Request, db: Ses
     parsed = urlparse(source.base_url)
     is_public_status_source = parsed.path.startswith("/status/")
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    print(f"[PROXY] Source base_url: {source.base_url}, origin: {origin}, path: {path}")
+    logger.debug("Proxy request source=%s origin=%s path=%s", source.base_url, origin, path)
     if path:
         # Asset/sub-page requests: root at origin so absolute-path assets resolve correctly
         upstream_url = f"{origin}/{path.lstrip('/')}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import random
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -33,7 +34,7 @@ def default_grid_configuration() -> dict:
         "columns": 1,
         "rows": 1,
         "zones": [
-            {"id": "main", "name": "Main", "x": 0, "y": 0, "w": 1, "h": 1}
+            {"id": "zone-1", "name": "Zone 1", "x": 0, "y": 0, "w": 1, "h": 1}
         ],
     }
 
@@ -79,17 +80,84 @@ def delete_content_source(db: Session, source: ContentSource) -> None:
     db.commit()
 
 
-def create_layout(db: Session, name: str, grid_configuration: str | None) -> Layout:
-    layout = Layout(name=name.strip(), grid_configuration=normalize_grid_configuration(grid_configuration))
+def _parse_schedule_days(days: list[int] | None) -> list[int] | None:
+    """Validate and normalise schedule_days; return None if empty."""
+    if not days:
+        return None
+    return sorted({int(d) for d in days if 0 <= int(d) <= 6})
+
+
+def _parse_hhmm(value: str | None) -> str | None:
+    """Return a validated HH:MM string or None."""
+    if not value or not value.strip():
+        return None
+    value = value.strip()
+    if not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', value):
+        raise ValueError(f"Invalid time format: {value!r}. Expected HH:MM.")
+    return value
+
+
+def is_layout_active_now(layout: Layout) -> bool:
+    """Return True if the layout is currently within its schedule, or if no schedule is configured."""
+    if not layout.schedule_enabled:
+        return True
+
+    has_schedule = layout.schedule_start or layout.schedule_end or layout.schedule_days
+    if not has_schedule:
+        return True
+
+    now = datetime.now(timezone.utc).astimezone()  # local server time
+    if layout.schedule_days is not None:
+        if now.weekday() not in layout.schedule_days:
+            return False
+
+    current_hhmm = now.strftime("%H:%M")
+    if layout.schedule_start and current_hhmm < layout.schedule_start:
+        return False
+    if layout.schedule_end and current_hhmm >= layout.schedule_end:
+        return False
+    return True
+
+
+def create_layout(
+    db: Session,
+    name: str,
+    grid_configuration: str | None,
+    schedule_enabled: bool = False,
+    schedule_start: str | None = None,
+    schedule_end: str | None = None,
+    schedule_days: list[int] | None = None,
+) -> Layout:
+    layout = Layout(
+        name=name.strip(),
+        grid_configuration=normalize_grid_configuration(grid_configuration),
+        schedule_enabled=bool(schedule_enabled),
+        schedule_start=_parse_hhmm(schedule_start),
+        schedule_end=_parse_hhmm(schedule_end),
+        schedule_days=_parse_schedule_days(schedule_days),
+    )
     db.add(layout)
     db.commit()
     db.refresh(layout)
     return layout
 
 
-def update_layout(db: Session, layout: Layout, name: str, grid_configuration: str | None) -> Layout:
+def update_layout(
+    db: Session,
+    layout: Layout,
+    name: str,
+    grid_configuration: str | None,
+    schedule_enabled: bool = False,
+    schedule_start: str | None = None,
+    schedule_end: str | None = None,
+    schedule_days: list[int] | None = None,
+) -> Layout:
     layout.name = name.strip()
     layout.grid_configuration = normalize_grid_configuration(grid_configuration)
+    layout.schedule_enabled = bool(schedule_enabled)
+    layout.schedule_start = _parse_hhmm(schedule_start)
+    layout.schedule_end = _parse_hhmm(schedule_end)
+    layout.schedule_days = _parse_schedule_days(schedule_days)
     db.add(layout)
     db.commit()
     db.refresh(layout)

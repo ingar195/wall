@@ -107,10 +107,49 @@
                         <span>Name</span>
                         <input type="text" name="name" placeholder="Full Screen" required>
                     </label>
-                    <label>
-                        <span>Grid Configuration JSON</span>
-                        <textarea name="grid_configuration" rows="8" placeholder='{"columns":1,"rows":1,"zones":[{"id":"main","name":"Main","x":0,"y":0,"w":1,"h":1}]}'></textarea>
-                    </label>
+                    <section class="layout-builder" data-layout-builder>
+                        <div class="panel-header">
+                            <h3>Layout Builder</h3>
+                            <button type="button" class="ghost" data-layout-reset>Reset</button>
+                        </div>
+                        <p class="muted">Click a zone to select it, then split it vertically or horizontally.</p>
+                        <div class="layout-builder-actions inline-actions">
+                            <button type="button" class="secondary" data-layout-split="vertical">Split Vertical</button>
+                            <button type="button" class="secondary" data-layout-split="horizontal">Split Horizontal</button>
+                            <button type="button" class="ghost" data-layout-symmetric>Symmetric</button>
+                            <button type="button" class="ghost" data-layout-remove>Remove Split</button>
+                        </div>
+                        <div class="layout-builder-status muted" data-layout-status>Select a zone to split.</div>
+                        <div class="layout-builder-preview" data-layout-preview></div>
+                        <input type="hidden" name="grid_configuration" data-layout-json value="">
+                    </section>
+                    <fieldset class="schedule-fieldset">
+                        <legend class="schedule-legend">
+                            <span>Schedule <span class="muted">(optional)</span></span>
+                            <label class="schedule-enable-inline">
+                                <input type="checkbox" name="schedule_enabled" value="1">
+                                <span>Enable</span>
+                            </label>
+                        </legend>
+                        <div class="schedule-row">
+                            <label>
+                                <span>Start</span>
+                                <input type="time" name="schedule_start">
+                            </label>
+                            <label>
+                                <span>End</span>
+                                <input type="time" name="schedule_end">
+                            </label>
+                        </div>
+                        <div class="schedule-days">
+                            {% for val, label in [(0,"Mon"),(1,"Tue"),(2,"Wed"),(3,"Thu"),(4,"Fri"),(5,"Sat"),(6,"Sun")] %}
+                            <label class="day-check">
+                                <input type="checkbox" name="schedule_days" value="{{ val }}">
+                                <span>{{ label }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </fieldset>
                     <button type="submit">Save Layout</button>
                 </form>
 
@@ -126,10 +165,51 @@
                                 <span>Name</span>
                                 <input type="text" name="name" value="{{ layout.name }}" required>
                             </label>
-                            <label>
-                                <span>Grid Configuration JSON</span>
-                                <textarea name="grid_configuration" rows="7" required>{{ layout.grid_configuration | tojson(indent=2) }}</textarea>
-                            </label>
+                            <section class="layout-builder" data-layout-builder>
+                                <div class="panel-header">
+                                    <h3>Layout Builder</h3>
+                                    <button type="button" class="ghost" data-layout-reset>Reset</button>
+                                </div>
+                                <p class="muted">Click a zone to select it, then split it vertically or horizontally.</p>
+                                <div class="layout-builder-actions inline-actions">
+                                    <button type="button" class="secondary" data-layout-split="vertical">Split Vertical</button>
+                                    <button type="button" class="secondary" data-layout-split="horizontal">Split Horizontal</button>
+                                    <button type="button" class="ghost" data-layout-symmetric>Symmetric</button>
+                                    <button type="button" class="ghost" data-layout-remove>Remove Split</button>
+                                </div>
+                                <div class="layout-builder-status muted" data-layout-status>Select a zone to split.</div>
+                                <div class="layout-builder-preview" data-layout-preview></div>
+                                <input type="hidden" name="grid_configuration" data-layout-json value="{{ layout.grid_configuration | tojson | forceescape }}">
+                            </section>
+                            <fieldset class="schedule-fieldset">
+                                <legend class="schedule-legend">
+                                    <span>Schedule <span class="muted">(optional)</span></span>
+                                    <label class="schedule-enable-inline">
+                                        <input type="checkbox" name="schedule_enabled" value="1"
+                                            {% if layout.schedule_enabled %}checked{% endif %}>
+                                        <span>Enable</span>
+                                    </label>
+                                </legend>
+                                <div class="schedule-row">
+                                    <label>
+                                        <span>Start</span>
+                                        <input type="time" name="schedule_start" value="{{ layout.schedule_start or '' }}">
+                                    </label>
+                                    <label>
+                                        <span>End</span>
+                                        <input type="time" name="schedule_end" value="{{ layout.schedule_end or '' }}">
+                                    </label>
+                                </div>
+                                <div class="schedule-days">
+                                    {% for val, label in [(0,"Mon"),(1,"Tue"),(2,"Wed"),(3,"Thu"),(4,"Fri"),(5,"Sat"),(6,"Sun")] %}
+                                    <label class="day-check">
+                                        <input type="checkbox" name="schedule_days" value="{{ val }}"
+                                            {% if layout.schedule_days and val in layout.schedule_days %}checked{% endif %}>
+                                        <span>{{ label }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </fieldset>
                             <button type="submit">Save</button>
                         </form>
                         <div class="inline-actions action-row">
@@ -177,8 +257,8 @@
                                 <label>
                                     <span>Type</span>
                                     <select name="assignment_type">
-                                        <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% elif not zone.assignment %}selected{% endif %}>Embed (for browsers)</option>
-                                        <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% endif %}>Redirect (for electron)</option>
+                                        <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% elif not zone.assignment %}selected{% endif %}>Embed (http)</option>
+                                        <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% endif %}>Redirect (https)</option>
                                     </select>
                                 </label>
                                 <label>
@@ -246,28 +326,5 @@
         </section>
     </div>
 </main>
-
-<script>
-(function () {
-    const buttons = document.querySelectorAll('.tab-btn');
-    const panels = document.querySelectorAll('.tab-panel');
-
-    function activate(tab) {
-        buttons.forEach(b => {
-            const active = b.dataset.tab === tab;
-            b.classList.toggle('active', active);
-            b.setAttribute('aria-selected', active);
-        });
-        panels.forEach(p => p.classList.toggle('hidden', p.id !== 'tab-' + tab));
-        try { sessionStorage.setItem('adminTab', tab); } catch (e) {}
-    }
-
-    buttons.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
-
-    try {
-        const saved = sessionStorage.getItem('adminTab');
-        if (saved) activate(saved);
-    } catch (e) {}
-}());
-</script>
+<script src="/static/admin.js"></script>
 {% endblock %}

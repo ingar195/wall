@@ -38,6 +38,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 - `PORT`: default bind port for local scripts, defaults to `8000`
 - `ADMIN_PASSWORD`: password for the built-in admin login page
 - `SESSION_SECRET`: secret used to sign the admin session cookie
+- `APP_ENV`: `development` or `production`; production enforces non-default secrets
+- `TRUSTED_HOSTS`: comma-separated allowed Host headers (used by TrustedHost middleware)
+- `TRUSTED_PROXY_IPS`: comma-separated reverse-proxy client IPs allowed to set forwarded headers
 
 Generate a key with:
 
@@ -73,6 +76,7 @@ npm install
 {
 	"server": "https://test.angry.fish",
 	"kiosk": true,
+	"pixelShiftIntervalMs": 30000,
 	"displayMode": "primary",
 	"displayIds": [],
 	"resolution": {
@@ -90,10 +94,17 @@ npm install
 npm start
 ```
 
+On Debian/Linux you can also use the helper launcher:
+
+```bash
+./start-debian.sh
+```
+
 ### Electron Display Settings
 
 - `displayMode`: `primary` or `span`
 - `displayIds`: optional monitor IDs to target; empty list means all detected displays for `span`
+- `pixelShiftIntervalMs`: optional burn-in shift interval in milliseconds
 - `resolution.x` and `resolution.y`: optional pixel offset for the top-left corner of the window canvas; set to `null` to use the detected display origin
 - `resolution.width` and `resolution.height`: optional virtual canvas override; set to `null` to use detected display bounds
 
@@ -103,6 +114,7 @@ Examples:
 
 ```json
 {
+	"pixelShiftIntervalMs": 30000,
 	"displayMode": "primary",
 	"displayIds": [],
 	"resolution": { "x": null, "y": null, "width": null, "height": null }
@@ -113,6 +125,7 @@ Examples:
 
 ```json
 {
+	"pixelShiftIntervalMs": 30000,
 	"displayMode": "span",
 	"displayIds": [],
 	"resolution": { "x": null, "y": null, "width": null, "height": null }
@@ -155,6 +168,7 @@ You can also override these with environment variables: `WALL_DISPLAY_MODE`, `WA
 - Change both `ADMIN_PASSWORD` and `SESSION_SECRET` before exposing the service.
 - All admin mutations are recorded in the audit log panel.
 - Admin POST forms include CSRF tokens and reject invalid submissions with HTTP 403.
+- In production, startup fails fast if `ENCRYPTION_KEY`, `ADMIN_PASSWORD`, or `SESSION_SECRET` are missing/default.
 
 ## Notes
 

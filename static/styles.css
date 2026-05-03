@@ -1,7 +1,10 @@
 :root {
     --bg: #1e1e1e;
     --panel: #252526;
+    --panel-strong: #2d2d30;
+    --field-bg: #1f1f1f;
     --panel-border: #3c3c3c;
+    --border-subtle: rgba(255, 255, 255, 0.08);
     --text: #cccccc;
     --muted: #9da0a6;
     --accent: #007acc;
@@ -30,6 +33,19 @@ body {
     padding: 32px;
 }
 
+.hero-card,
+.panel,
+.pairing-card,
+.layout-assignment-card,
+.hero-stats article,
+.table-row,
+.zone-editor-card,
+.source-card,
+.inline-form {
+    border: 1px solid var(--panel-border);
+    border-radius: 18px;
+}
+
 .admin-layout {
     display: grid;
     gap: 24px;
@@ -50,7 +66,6 @@ body {
 .panel,
 .pairing-card {
     background: var(--panel);
-    border: 1px solid var(--panel-border);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
     backdrop-filter: blur(12px);
@@ -77,9 +92,7 @@ body {
 
 .hero-stats article,
 .table-row {
-    border: 1px solid #3c3c3c;
-    border-radius: 18px;
-    background: #2d2d30;
+    background: var(--panel-strong);
 }
 
 .hero-stats article {
@@ -139,8 +152,8 @@ select {
     padding: 12px 14px;
     border-radius: 14px;
     color: var(--text);
-    border: 1px solid #3c3c3c;
-    background: #1f1f1f;
+    border: 1px solid var(--panel-border);
+    background: var(--field-bg);
 }
 
 input::placeholder,
@@ -235,8 +248,8 @@ button.ghost {
     padding: 12px;
     overflow: auto;
     border-radius: 14px;
-    background: #1e1e1e;
-    border: 1px solid #3c3c3c;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
 }
 
 .eyebrow {
@@ -272,16 +285,99 @@ button.ghost {
 
 .layout-assignment-card {
     margin-top: 18px;
+    overflow: hidden;
+}
+
+.layout-builder {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
     border: 1px solid var(--panel-border);
     border-radius: 18px;
-    overflow: hidden;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+.layout-builder h3 {
+    margin: 0;
+}
+
+.layout-builder-actions {
+    flex-wrap: wrap;
+}
+
+.layout-builder-preview {
+    display: grid;
+    position: relative;
+    grid-template-columns: repeat(var(--layout-columns, 1), minmax(0, 1fr));
+    grid-template-rows: repeat(var(--layout-rows, 1), minmax(56px, 1fr));
+    gap: 8px;
+    min-height: 220px;
+    padding: 8px;
+    border-radius: 18px;
+    background: #141618;
+    border: 1px solid var(--panel-border);
+}
+
+.layout-zone-tile {
+    display: grid;
+    gap: 6px;
+    align-content: center;
+    justify-items: center;
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(0, 122, 204, 0.18), rgba(14, 99, 156, 0.1));
+    color: var(--text);
+    text-align: center;
+    transform: none;
+}
+
+.layout-zone-tile:hover {
+    transform: none;
+    border-color: rgba(255, 255, 255, 0.22);
+}
+
+.layout-zone-tile.selected {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.layout-resize-handle {
+    position: absolute;
+    z-index: 2;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    background: #0f1720;
+    color: white;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+}
+
+.layout-resize-handle.east,
+.layout-resize-handle.west {
+    transform: translate(-50%, -50%);
+}
+
+.layout-resize-handle.north,
+.layout-resize-handle.south {
+    transform: translate(-50%, -50%);
+}
+
+.layout-resize-handle:hover {
+    transform: translate(-50%, -50%);
+    background: var(--accent);
 }
 
 .layout-assignment-header {
     display: flex;
     align-items: center;
     padding: 10px 18px;
-    background: #2d2d30;
+    background: var(--panel-strong);
     border-bottom: 1px solid var(--panel-border);
     font-weight: 700;
     font-size: 0.95rem;
@@ -302,9 +398,7 @@ button.ghost {
 .source-card,
 .inline-form {
     padding: 16px;
-    border: 1px solid #3c3c3c;
-    border-radius: 18px;
-    background: #252526;
+    background: var(--panel);
 }
 
 .error-banner {
@@ -337,7 +431,7 @@ button.ghost {
     background: #0d1114;
     border-radius: 18px;
     overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-subtle);
 }
 
 .display-zone iframe {
@@ -426,7 +520,6 @@ button.ghost {
 .tab-btn:hover {
     color: var(--text);
     background: var(--panel);
-    transform: none;
 }
 
 .tab-btn.active {
@@ -438,4 +531,69 @@ button.ghost {
 
 .tab-panel.hidden {
     display: none;
+}
+
+/* ── Schedule fieldset ──────────────────────────────────────────── */
+.schedule-fieldset {
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin: 0;
+}
+
+.schedule-fieldset legend {
+    padding: 0 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.schedule-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.schedule-enable-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.schedule-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 10px;
+}
+
+.schedule-row label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.85rem;
+}
+
+.schedule-days {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.day-check {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.day-check input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent, #4f8ef7);
+    cursor: pointer;
 }

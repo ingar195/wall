@@ -1,6 +1,7 @@
 {
   "server": "https://test.angry.fish",
   "kiosk": true,
+  "pixelShiftIntervalMs": 30000,
   "displayMode": "primary",
   "displayIds": [],
   "resolution": {

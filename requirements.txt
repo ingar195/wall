@@ -1,6 +1,5 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.32,<1.0
-httpx>=0.28,<1.0
 websockets>=13.0,<17.0
 sqlalchemy>=2.0,<3.0
 jinja2>=3.1,<4.0

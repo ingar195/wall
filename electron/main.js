@@ -18,6 +18,7 @@
  *   WALL_DISPLAY_IDS   Comma-separated Electron display IDs (optional)
  *   WALL_X / WALL_Y  Optional virtual canvas origin override
  *   WALL_WIDTH / WALL_HEIGHT  Optional virtual canvas size override
+ *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
 const { app, BrowserWindow, globalShortcut, screen } = require("electron");
@@ -95,6 +96,7 @@ const WALL_X = parseIntOrNull(process.env.WALL_X || (_cfg.resolution && _cfg.res
 const WALL_Y = parseIntOrNull(process.env.WALL_Y || (_cfg.resolution && _cfg.resolution.y));
 const WALL_WIDTH = parsePositiveInt(process.env.WALL_WIDTH || (_cfg.resolution && _cfg.resolution.width));
 const WALL_HEIGHT = parsePositiveInt(process.env.WALL_HEIGHT || (_cfg.resolution && _cfg.resolution.height));
+const PIXEL_SHIFT_INTERVAL_MS = parsePositiveInt(process.env.WALL_PIXEL_SHIFT_INTERVAL_MS || _cfg.pixelShiftIntervalMs) || 30 * 1000;
 
 function getDeviceId() {
   const envId = process.env.WALL_DEVICE || _cfg.device;
@@ -117,7 +119,6 @@ const DEVICE_ID = getDeviceId();
 const API_URL = `${SERVER_BASE}/api/device/${encodeURIComponent(DEVICE_ID)}`;
 const WS_URL = SERVER_BASE.replace(/^http/, "ws") + `/ws/device/${encodeURIComponent(DEVICE_ID)}`;
 const PIXEL_SHIFT_PX = 20;
-const PIXEL_SHIFT_INTERVAL_MS = 30 * 1000;
 const PIXEL_SHIFT_STEPS = [
   { x: 0, y: 0 },
   { x: PIXEL_SHIFT_PX, y: 0 },
@@ -174,16 +175,16 @@ function gridToPixelBounds(zone, columns, rows, displayBounds) {
   };
 }
 
-function clampBoundsToDisplay(bounds, displayBounds) {
-  const minX = displayBounds.x;
-  const minY = displayBounds.y;
-  const maxX = displayBounds.x + displayBounds.width - bounds.width;
-  const maxY = displayBounds.y + displayBounds.height - bounds.height;
+function insetDisplayBounds(displayBounds, insetPx) {
+  const maxInsetX = Math.max(0, Math.floor((displayBounds.width - 100) / 2));
+  const maxInsetY = Math.max(0, Math.floor((displayBounds.height - 100) / 2));
+  const appliedInsetX = Math.min(insetPx, maxInsetX);
+  const appliedInsetY = Math.min(insetPx, maxInsetY);
   return {
-    x: Math.max(minX, Math.min(bounds.x, maxX)),
-    y: Math.max(minY, Math.min(bounds.y, maxY)),
-    width: bounds.width,
-    height: bounds.height,
+    x: displayBounds.x + appliedInsetX,
+    y: displayBounds.y + appliedInsetY,
+    width: Math.max(100, displayBounds.width - appliedInsetX * 2),
+    height: Math.max(100, displayBounds.height - appliedInsetY * 2),
   };
 }
 
@@ -240,6 +241,32 @@ function applyWindowDisplayCss(win) {
   win.webContents.on("dom-ready", inject);
 }
 
+function createDisplayWindow(bounds, { kiosk = false } = {}) {
+  return new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    fullscreen: false,
+    kiosk,
+    movable: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    closable: false,
+    focusable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    autoHideMenuBar: true,
+    backgroundColor: "#000000",
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+}
+
 // ── Window management ─────────────────────────────────────────────────────────
 
 function closePairingWindow() {
@@ -259,8 +286,26 @@ function closeBackgroundWindow() {
 function closeZoneWindows() {
   for (const win of zoneWindows.values()) {
     if (!win.isDestroyed()) {
-      win.close();
+      win.destroy();
     }
+  }
+  zoneWindows.clear();
+  zoneBaseBounds.clear();
+}
+
+function disposeZoneWindow(zoneId, win) {
+  zoneBaseBounds.delete(zoneId);
+  zoneWindows.delete(zoneId);
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+  win.hide();
+  win.destroy();
+}
+
+function disposeAllZoneWindows() {
+  for (const [zoneId, win] of zoneWindows.entries()) {
+    disposeZoneWindow(zoneId, win);
   }
   zoneWindows.clear();
   zoneBaseBounds.clear();
@@ -311,20 +356,16 @@ function ensureBackgroundWindow() {
 
 function applyPixelShiftToWindows() {
   const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
-  const displayBounds = getTargetDisplayBounds();
   for (const [zoneId, win] of zoneWindows.entries()) {
     if (!win || win.isDestroyed()) continue;
     const base = zoneBaseBounds.get(zoneId);
     if (!base) continue;
-    const shifted = clampBoundsToDisplay(
-      {
-        x: base.x + step.x,
-        y: base.y + step.y,
-        width: base.width,
-        height: base.height,
-      },
-      displayBounds
-    );
+    const shifted = {
+      x: base.x + step.x,
+      y: base.y + step.y,
+      width: base.width,
+      height: base.height,
+    };
     win.setBounds(shifted, false);
   }
 }
@@ -344,23 +385,7 @@ function ensurePairingWindow() {
     return pairingWindow;
   }
   const { x, y, width, height } = getTargetDisplayBounds();
-  pairingWindow = new BrowserWindow({
-    x,
-    y,
-    width,
-    height,
-    frame: false,
-    kiosk: WALL_KIOSK,
-    autoHideMenuBar: true,
-    backgroundColor: "#000000",
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      webSecurity: false,
-      allowRunningInsecureContent: true,
-      preload: path.join(__dirname, "preload.js"),
-    },
-  });
+  pairingWindow = createDisplayWindow({ x, y, width, height }, { kiosk: WALL_KIOSK });
   pairingWindow.on("closed", () => {
     pairingWindow = null;
   });
@@ -381,44 +406,24 @@ function applyLayout(data) {
   ensureBackgroundWindow();
 
   const { layout, zones } = data;
-  const displayBounds = getTargetDisplayBounds();
-  const nextIds = new Set();
+  const displayBounds = insetDisplayBounds(getTargetDisplayBounds(), PIXEL_SHIFT_PX);
+  const nextZones = zones.filter((zone) => zone.url);
+  const nextIds = new Set(nextZones.map((zone) => String(zone.id)));
 
-  for (const zone of zones) {
-    if (!zone.url) continue;
+  for (const [existingId, existingWindow] of Array.from(zoneWindows.entries())) {
+    if (!nextIds.has(existingId)) {
+      disposeZoneWindow(existingId, existingWindow);
+    }
+  }
+
+  for (const zone of nextZones) {
     const zoneId = String(zone.id);
-    nextIds.add(zoneId);
 
     const bounds = gridToPixelBounds(zone, layout.columns, layout.rows, displayBounds);
     zoneBaseBounds.set(zoneId, bounds);
     let win = zoneWindows.get(zoneId);
     if (!win || win.isDestroyed()) {
-      win = new BrowserWindow({
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-        frame: false,
-        fullscreen: false,
-        kiosk: false,
-        movable: false,
-        resizable: false,
-        minimizable: false,
-        maximizable: false,
-        closable: false,
-        focusable: false,
-        skipTaskbar: true,
-        alwaysOnTop: true,
-        autoHideMenuBar: true,
-        backgroundColor: "#000000",
-        webPreferences: {
-          nodeIntegration: false,
-          contextIsolation: true,
-          webSecurity: false,
-          allowRunningInsecureContent: true,
-          preload: path.join(__dirname, "preload.js"),
-        },
-      });
+      win = createDisplayWindow(bounds);
       win.setAlwaysOnTop(true, "screen-saver");
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       win.on("closed", () => {
@@ -429,15 +434,12 @@ function applyLayout(data) {
     }
 
     const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
-    const shifted = clampBoundsToDisplay(
-      {
-        x: bounds.x + step.x,
-        y: bounds.y + step.y,
-        width: bounds.width,
-        height: bounds.height,
-      },
-      displayBounds
-    );
+    const shifted = {
+      x: bounds.x + step.x,
+      y: bounds.y + step.y,
+      width: bounds.width,
+      height: bounds.height,
+    };
     win.setBounds(shifted, false);
     const currentUrl = win.webContents.getURL();
     if (currentUrl !== zone.url) {
@@ -445,16 +447,6 @@ function applyLayout(data) {
     }
     if (!win.isVisible()) {
       win.showInactive();
-    }
-  }
-
-  for (const [existingId, existingWindow] of zoneWindows.entries()) {
-    if (!nextIds.has(existingId)) {
-      zoneBaseBounds.delete(existingId);
-      if (!existingWindow.isDestroyed()) {
-        existingWindow.close();
-      }
-      zoneWindows.delete(existingId);
     }
   }
 }
@@ -514,9 +506,19 @@ async function loadLayout() {
       // Poll every 5 s until paired
       clearTimeout(pollTimer);
       pollTimer = setTimeout(loadLayout, 5_000);
+    } else if (data.status === "scheduled_off") {
+      console.log("[WALL] Layout is outside its schedule window — showing blank screen.");
+      disposeAllZoneWindows();
+      closePairingWindow();
+      ensureBackgroundWindow();  // keep a full-screen black window visible
+      // Poll every 60 s while waiting for the schedule window to open
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(loadLayout, 60_000);
     } else {
       clearTimeout(pollTimer);
       applyLayout(data);
+      // Re-poll every 60 s so schedule boundaries are detected automatically
+      pollTimer = setTimeout(loadLayout, 60_000);
     }
   } catch (err) {
     console.error("[WALL] Failed to fetch layout:", err.message);
@@ -538,6 +540,7 @@ app.whenReady().then(() => {
     y: WALL_Y,
     width: WALL_WIDTH,
     height: WALL_HEIGHT,
+    pixelShiftIntervalMs: PIXEL_SHIFT_INTERVAL_MS,
   }));
   globalShortcut.register("Escape", () => app.quit());
   globalShortcut.register("Control+Q", () => app.quit());

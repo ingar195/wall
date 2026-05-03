@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "start:debian": "bash ./start-debian.sh",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
     "build:mac": "electron-builder --mac",
@@ -22,7 +23,6 @@
     "productName": "Wall Display",
     "files": [
       "main.js",
-      "preload.js",
       "node_modules/**/*"
     ],
     "win": {

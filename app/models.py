@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -27,6 +27,13 @@ class Layout(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     grid_configuration: Mapped[dict] = mapped_column(JSON, nullable=False)
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Optional schedule – when set, the layout is only served within this window.
+    # schedule_start / schedule_end are "HH:MM" 24-hour strings (local server time).
+    # schedule_days is a JSON list of weekday integers (0=Monday … 6=Sunday).
+    schedule_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    schedule_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    schedule_days: Mapped[list | None] = mapped_column(JSON, nullable=True)
     devices: Mapped[list["Device"]] = relationship(back_populates="current_layout")
 
 
