@@ -258,13 +258,7 @@
                                         {% endfor %}
                                     </select>
                                 </label>
-                                <!-- <label>
-                                    <span>Type</span>
-                                    <select name="assignment_type">
-                                        <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% elif not zone.assignment %}selected{% endif %}>Embed (http)</option>
-                                        <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% endif %}>Redirect (https)</option>
-                                    </select>
-                                </label> -->
+                                <!-- assignment type removed: always redirect -->
                                 <label>
                                     <span>Relative Path</span>
                                     <input type="text" name="relative_path" value="{{ zone.assignment.relative_path if zone.assignment else '' }}" placeholder="Leave blank to use source URL path">

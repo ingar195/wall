@@ -60,7 +60,7 @@ class LayoutAssignment(Base):
     zone_id: Mapped[str] = mapped_column(String(100), nullable=False)
     source_id: Mapped[int] = mapped_column(ForeignKey("content_sources.id"), nullable=False)
     relative_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    assignment_type: Mapped[str] = mapped_column(String(20), nullable=False, default="embed")  # "embed" or "redirect"
+    assignment_type: Mapped[str] = mapped_column(String(20), nullable=False, default="redirect")
 
     layout: Mapped[Layout] = relationship()
     source: Mapped[ContentSource] = relationship()
