@@ -6,7 +6,7 @@
 <main class="admin-layout">
     <section class="hero-card">
         <div>
-            <p class="eyebrow">DisplayManager V1</p>
+            <p class="eyebrow">DisplayManager</p>
             <h1>Digital signage control plane</h1>
             <p class="lede">Manage authenticated content sources, layouts, and unattended screens from one place.</p>
         </div>
@@ -30,6 +30,12 @@
         <button class="tab-btn active" role="tab" aria-controls="tab-sources" aria-selected="true" data-tab="sources">Sources</button>
         <button class="tab-btn" role="tab" aria-controls="tab-layouts" aria-selected="false" data-tab="layouts">Layouts</button>
         <button class="tab-btn" role="tab" aria-controls="tab-devices" aria-selected="false" data-tab="devices">Devices</button>
+        <button class="tab-btn" role="tab" aria-controls="tab-audit-log" aria-selected="false" data-tab="audit-log">Audit Log</button>
+                
+        <form method="post" action="/admin/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="logout">Log Out</button>
+        </form>
     </nav>
 
     <!-- Sources Tab -->
@@ -228,7 +234,6 @@
 
             <article class="panel">
                 <h2>Assign Sources To Layout</h2>
-                <p class="muted">Configure each zone directly instead of pasting assignment JSON.</p>
                 {% for row in layout_editor_rows %}
                 <div class="layout-assignment-card">
                     <div class="layout-assignment-header">
@@ -242,7 +247,6 @@
                             <input type="hidden" name="zone_id" value="{{ zone.id }}">
                             <div class="zone-editor-head">
                                 <strong>{{ zone.name }}</strong>
-                                <span class="muted">{{ zone.id }}</span>
                             </div>
                             <div class="form-grid two-up compact-gap">
                                 <label>
@@ -254,13 +258,13 @@
                                         {% endfor %}
                                     </select>
                                 </label>
-                                <label>
+                                <!-- <label>
                                     <span>Type</span>
                                     <select name="assignment_type">
                                         <option value="embed" {% if zone.assignment and zone.assignment.assignment_type == 'embed' %}selected{% elif not zone.assignment %}selected{% endif %}>Embed (http)</option>
                                         <option value="redirect" {% if zone.assignment and zone.assignment.assignment_type == 'redirect' %}selected{% endif %}>Redirect (https)</option>
                                     </select>
-                                </label>
+                                </label> -->
                                 <label>
                                     <span>Relative Path</span>
                                     <input type="text" name="relative_path" value="{{ zone.assignment.relative_path if zone.assignment else '' }}" placeholder="Leave blank to use source URL path">
@@ -278,7 +282,24 @@
             </article>
         </section>
     </div>
-
+    <div id="tab-audit-log" class="tab-panel hidden" role="tabpanel">
+        <section class="grid-two">
+            <article class="panel">
+                <h2>Audit Log</h2>
+                <div class="table-like compact-list">
+                    {% for log in audit_logs %}
+                    <div class="table-row single-column">
+                        <strong>{{ log.action }}</strong>
+                        <p class="muted">{{ log.actor }} at {{ log.created_at }}</p>
+                        <p>{{ log.details }}</p>
+                    </div>
+                    {% else %}
+                    <p class="muted">No admin actions recorded yet.</p>
+                    {% endfor %}
+                </div>
+            </article>
+        </section>
+    </div>
     <!-- Devices Tab -->
     <div id="tab-devices" class="tab-panel hidden" role="tabpanel">
         <section class="grid-two">
@@ -286,10 +307,6 @@
                 <h2>Pair Device</h2>
                 <form method="post" action="/admin/devices/pair" class="stack-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <label>
-                        <span>Pairing Code</span>
-                        <input type="text" name="pairing_code" minlength="4" maxlength="4" placeholder="0412" required>
-                    </label>
                     <label>
                         <span>Device Name</span>
                         <input type="text" name="device_name" placeholder="Lobby Screen" required>
@@ -303,10 +320,14 @@
                             {% endfor %}
                         </select>
                     </label>
+                    <label>
+                        <span>Pairing Code</span>
+                        <input type="text" name="pairing_code" minlength="4" maxlength="4" placeholder="0412" required>
+                    </label>
                     <button type="submit">Pair Device</button>
                 </form>
 
-                <h2>Audit Log</h2>
+                <!-- <h2>Audit Log</h2>
                 <div class="table-like compact-list">
                     {% for log in audit_logs %}
                     <div class="table-row single-column">
@@ -317,7 +338,7 @@
                     {% else %}
                     <p class="muted">No admin actions recorded yet.</p>
                     {% endfor %}
-                </div>
+                </div> -->
             </article>
 
             <section hx-get="/admin/partials/devices" hx-trigger="load, every 10s" hx-swap="outerHTML">

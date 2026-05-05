@@ -1,10 +1,6 @@
 <article class="panel" id="devices-panel">
     <div class="panel-header">
         <h2>Devices</h2>
-        <form method="post" action="/admin/logout">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="ghost">Log Out</button>
-        </form>
     </div>
     <div class="table-like">
         {% for device in devices %}
@@ -30,6 +26,7 @@
                     <div>
                         <strong>{{ device.id }}</strong>
                         <span class="status-chip status-{{ device.status }}">{{ device.status }}</span>
+                        <!-- Remove this ? -->
                         {% if device.pairing_code %}
                         <p class="muted">Pending code: {{ device.pairing_code }}</p>
                         {% endif %}
@@ -40,7 +37,6 @@
                 </div>
             </form>
             <div class="inline-actions action-row">
-                <a href="/display/{{ device.id }}" class="button-link secondary" target="_blank" rel="noopener noreferrer">Open Client</a>
                 <form
                     method="post"
                     action="/admin/devices/{{ device.id }}/refresh"
