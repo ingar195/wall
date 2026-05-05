@@ -422,21 +422,20 @@ async def admin_set_layout_assignments(
     zone_id: list[str] = Form(...),
     source_id: list[str] = Form(...),
     relative_path: list[str] = Form(...),
-    assignment_type: list[str] = Form(...),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
     assignments: list[dict] = []
-    for current_zone_id, current_source_id, current_relative_path, current_type in zip(zone_id, source_id, relative_path, assignment_type, strict=True):
+    for current_zone_id, current_source_id, current_relative_path in zip(zone_id, source_id, relative_path, strict=True):
         if current_source_id.strip():
             assignments.append(
                 {
                     "zone_id": current_zone_id,
                     "source_id": int(current_source_id),
                     "relative_path": current_relative_path,
-                    "assignment_type": current_type,
+                    "assignment_type": "redirect",
                 }
             )
     set_layout_assignments(db, layout_id, assignments)
@@ -591,16 +590,10 @@ async def display_device(request: Request, device_id: str, db: Session = Depends
     zones = get_layout_zone_views(db, layout)
     
     # Check if this layout has a single redirect zone - if so, redirect immediately
-    redirect_zones = [z for z in zones if z.assignment_type == "redirect" and z.redirect_url]
+    redirect_zones = [z for z in zones if z.redirect_url]
     if redirect_zones:
         # Redirect to the first redirect zone's URL
         return redirect(redirect_zones[0].redirect_url)
-    
-    return templates.TemplateResponse(
-        request,
-        "display/layout.html",
-        {"device": device, "layout": layout, "zones": zones},
-    )
 
 
 @app.websocket("/ws/device/{device_id}")
