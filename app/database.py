@@ -6,8 +6,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from app.config import settings
 
 
-connect_args = {"check_same_thread": False} if settings.db_path.startswith("sqlite") else {}
-engine = create_engine(settings.db_path, connect_args=connect_args, future=True)
+is_sqlite = settings.db_path.startswith("sqlite")
+connect_args = {"check_same_thread": False} if is_sqlite else {}
+engine = create_engine(
+    settings.db_path,
+    connect_args=connect_args,
+    future=True,
+    pool_pre_ping=not is_sqlite,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 Base = declarative_base()
 

@@ -26,6 +26,7 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const https = require("https");
+const WebSocket = require("ws");
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -128,6 +129,7 @@ const PIXEL_SHIFT_STEPS = [
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
+let isQuitting = false;
 /** @type {Map<string, BrowserWindow>} */
 let zoneWindows = new Map();
 /** @type {Map<string, {x:number,y:number,width:number,height:number}>} */
@@ -238,6 +240,8 @@ function applyWindowDisplayCss(win) {
   };
 
   win.webContents.on("did-finish-load", inject);
+  // dom-ready fires before did-finish-load and ensures CSS is applied even
+  // for pages that never fully load (e.g. slow content sources).
   win.webContents.on("dom-ready", inject);
 }
 
@@ -454,8 +458,8 @@ function applyLayout(data) {
 // ── WebSocket connection ──────────────────────────────────────────────────────
 
 function connectWebSocket() {
+  if (isQuitting) return;
   try {
-    const WebSocket = require("ws");
     wsClient = new WebSocket(WS_URL);
 
     wsClient.on("open", () => {
@@ -481,9 +485,11 @@ function connectWebSocket() {
     });
 
     wsClient.on("close", () => {
-      console.log("[WS] disconnected — reconnecting in 5 s");
       clearInterval(wsClient._pingInterval);
-      setTimeout(connectWebSocket, 5_000);
+      if (!isQuitting) {
+        console.log("[WS] disconnected — reconnecting in 5 s");
+        setTimeout(connectWebSocket, 5_000);
+      }
     });
 
     wsClient.on("error", (err) => {
@@ -491,7 +497,7 @@ function connectWebSocket() {
     });
   } catch (err) {
     console.error("[WS] failed to create WebSocket:", err.message);
-    setTimeout(connectWebSocket, 10_000);
+    if (!isQuitting) setTimeout(connectWebSocket, 10_000);
   }
 }
 
@@ -551,9 +557,18 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  isQuitting = true;
+  if (wsClient) {
+    wsClient.terminate();
+    wsClient = null;
+  }
   if (pixelShiftTimer) {
     clearInterval(pixelShiftTimer);
     pixelShiftTimer = null;
+  }
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
   }
   globalShortcut.unregisterAll();
   closeBackgroundWindow();

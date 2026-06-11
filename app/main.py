@@ -346,15 +346,18 @@ async def admin_create_layout(
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
-    layout = create_layout(
-        db,
-        name=name,
-        grid_configuration=grid_configuration,
-        schedule_enabled=schedule_enabled,
-        schedule_start=schedule_start or None,
-        schedule_end=schedule_end or None,
-        schedule_days=schedule_days or None,
-    )
+    try:
+        layout = create_layout(
+            db,
+            name=name,
+            grid_configuration=grid_configuration,
+            schedule_enabled=schedule_enabled,
+            schedule_start=schedule_start or None,
+            schedule_end=schedule_end or None,
+            schedule_days=schedule_days or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(request, db, "layout.create", f"Created layout {layout.name} ({layout.id})")
     return redirect("/admin")
 
@@ -377,16 +380,19 @@ async def admin_update_layout(
     layout = db.get(Layout, layout_id)
     if not layout:
         raise HTTPException(status_code=404, detail="Unknown layout")
-    update_layout(
-        db,
-        layout,
-        name=name,
-        grid_configuration=grid_configuration,
-        schedule_enabled=schedule_enabled,
-        schedule_start=schedule_start or None,
-        schedule_end=schedule_end or None,
-        schedule_days=schedule_days or None,
-    )
+    try:
+        update_layout(
+            db,
+            layout,
+            name=name,
+            grid_configuration=grid_configuration,
+            schedule_enabled=schedule_enabled,
+            schedule_start=schedule_start or None,
+            schedule_end=schedule_end or None,
+            schedule_days=schedule_days or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(request, db, "layout.update", f"Updated layout {layout.name} ({layout.id})")
     assigned_devices = db.scalars(select(Device).where(Device.current_layout_id == layout.id)).all()
     for device in assigned_devices:
@@ -457,7 +463,10 @@ async def admin_pair_device(
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
-    device = pair_device(db, pairing_code=pairing_code, name=device_name, layout_id=layout_id)
+    try:
+        device = pair_device(db, pairing_code=pairing_code, name=device_name, layout_id=layout_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(request, db, "device.pair", f"Paired device {device.name} ({device.id})")
     await manager.send(device.id, {"action": "new_layout"})
     return redirect("/admin")
@@ -588,12 +597,15 @@ async def display_device(request: Request, device_id: str, db: Session = Depends
     if not layout:
         raise HTTPException(status_code=500, detail="Assigned layout not found")
     zones = get_layout_zone_views(db, layout)
-    
-    # Check if this layout has a single redirect zone - if so, redirect immediately
     redirect_zones = [z for z in zones if z.redirect_url]
     if redirect_zones:
-        # Redirect to the first redirect zone's URL
         return redirect(redirect_zones[0].redirect_url)
+    # Paired but no content assigned yet — show a neutral waiting screen
+    return templates.TemplateResponse(
+        request,
+        "display/pairing.html",
+        {"device": device},
+    )
 
 
 @app.websocket("/ws/device/{device_id}")
@@ -655,8 +667,8 @@ async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, d
                     pass
 
             tasks = [
-                asyncio.ensure_future(client_to_upstream()),
-                asyncio.ensure_future(upstream_to_client()),
+                asyncio.create_task(client_to_upstream()),
+                asyncio.create_task(upstream_to_client()),
             ]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for t in pending:

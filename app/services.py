@@ -6,7 +6,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, ContentSource, Device, Layout, LayoutAssignment
@@ -42,7 +42,10 @@ def default_grid_configuration() -> dict:
 def normalize_grid_configuration(raw: str | None) -> dict:
     if not raw:
         return default_grid_configuration()
-    parsed = json.loads(raw)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"grid_configuration is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict) or "zones" not in parsed:
         raise ValueError("grid_configuration must be a JSON object with a zones array")
     return parsed
@@ -73,9 +76,7 @@ def update_content_source(db: Session, source: ContentSource, name: str, base_ur
 
 
 def delete_content_source(db: Session, source: ContentSource) -> None:
-    assignments = db.scalars(select(LayoutAssignment).where(LayoutAssignment.source_id == source.id)).all()
-    for assignment in assignments:
-        db.delete(assignment)
+    db.execute(delete(LayoutAssignment).where(LayoutAssignment.source_id == source.id))
     db.delete(source)
     db.commit()
 
@@ -165,21 +166,17 @@ def update_layout(
 
 
 def delete_layout(db: Session, layout: Layout) -> None:
-    assignments = db.scalars(select(LayoutAssignment).where(LayoutAssignment.layout_id == layout.id)).all()
-    for assignment in assignments:
-        db.delete(assignment)
+    db.execute(delete(LayoutAssignment).where(LayoutAssignment.layout_id == layout.id))
+    # Null out the layout reference on any assigned devices before deleting
     devices = db.scalars(select(Device).where(Device.current_layout_id == layout.id)).all()
     for device in devices:
         device.current_layout_id = None
-        db.add(device)
     db.delete(layout)
     db.commit()
 
 
 def set_layout_assignments(db: Session, layout_id: int, assignments: list[dict]) -> None:
-    existing = db.scalars(select(LayoutAssignment).where(LayoutAssignment.layout_id == layout_id)).all()
-    for row in existing:
-        db.delete(row)
+    db.execute(delete(LayoutAssignment).where(LayoutAssignment.layout_id == layout_id))
     for assignment in assignments:
         db.add(
             LayoutAssignment(
