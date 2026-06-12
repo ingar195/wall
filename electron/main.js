@@ -21,11 +21,9 @@
  *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
-const { app, BrowserWindow, globalShortcut, screen } = require("electron");
+const { app, BrowserWindow, globalShortcut, net, screen } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const http = require("http");
-const https = require("https");
 const WebSocket = require("ws");
 
 // ── Configuration ─────────────────────────────────────────────────────────────
@@ -143,21 +141,37 @@ let pixelShiftStepIndex = 0;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fetchJSON(url) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith("https") ? https : http;
-    mod.get(url, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(new Error(`JSON parse error: ${e.message}`));
-        }
-      });
-    }).on("error", reject);
-  });
+// Use Electron's Chromium-backed net.fetch so requests share the same TLS
+// fingerprint and User-Agent as the BrowserWindow content.  Node's http module
+// presents a different JA3 fingerprint that Cloudflare and other WAFs can block.
+async function fetchJSON(url) {
+  let res;
+  try {
+    res = await net.fetch(url);
+  } catch (err) {
+    throw new Error(`Network error: ${err.message}`);
+  }
+
+  if (res.status === 403) {
+    throw new Error(
+      `HTTP 403 Forbidden — server or reverse proxy rejected the request. ` +
+      `Check TRUSTED_HOSTS on the server and any WAF/Cloudflare rules.`
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} from server`);
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const preview = (await res.text()).slice(0, 120);
+    throw new Error(
+      `Server returned ${contentType || "unknown content-type"} instead of JSON. ` +
+      `Is the server URL correct? Got: ${preview}`
+    );
+  }
+
+  return res.json();
 }
 
 /**
@@ -460,7 +474,14 @@ function applyLayout(data) {
 function connectWebSocket() {
   if (isQuitting) return;
   try {
-    wsClient = new WebSocket(WS_URL);
+    // Include Origin and a browser-like User-Agent so the WebSocket upgrade
+    // request passes WAF / Cloudflare bot checks that reject bare Node.js clients.
+    wsClient = new WebSocket(WS_URL, {
+      headers: {
+        "Origin": SERVER_BASE,
+        "User-Agent": `Mozilla/5.0 (X11; Linux ${process.arch}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36`,
+      },
+    });
 
     wsClient.on("open", () => {
       console.log("[WS] connected");
@@ -493,7 +514,12 @@ function connectWebSocket() {
     });
 
     wsClient.on("error", (err) => {
-      console.error("[WS] error:", err.message);
+      if (err.message.includes("403")) {
+        console.error("[WS] 403 Forbidden — server rejected the WebSocket upgrade. " +
+          "Check TRUSTED_HOSTS on the server and any reverse proxy configuration.");
+      } else {
+        console.error("[WS] error:", err.message);
+      }
     });
   } catch (err) {
     console.error("[WS] failed to create WebSocket:", err.message);
