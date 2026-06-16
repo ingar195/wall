@@ -49,17 +49,32 @@ resolve_xauthority() {
   echo "Warning: could not locate Xauthority — display may refuse the connection."
 }
 
-if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-  echo "Display: Wayland (${WAYLAND_DISPLAY})"
-  ELECTRON_FLAGS="$ELECTRON_FLAGS --ozone-platform=wayland --enable-features=UseOzonePlatform"
+# This app positions one native window per zone with absolute screen
+# coordinates (win.setBounds({x,y,...})). Native Wayland does not let clients
+# set absolute toplevel position — only the compositor decides placement —
+# so under --ozone-platform=wayland every zone window lands wherever the
+# compositor's own placement policy puts it (typically a cascade/offset from
+# the previous window), completely ignoring the configured grid. X11 (either
+# a real X server or XWayland, which labwc/wayfire normally provide
+# alongside native Wayland) honors absolute positioning, so it is strongly
+# preferred even when WAYLAND_DISPLAY is also set.
+unset USE_WAYLAND
 
-elif [[ -n "${DISPLAY:-}" ]]; then
+if [[ -n "${DISPLAY:-}" ]]; then
   echo "Display: X11 (${DISPLAY})"
   resolve_xauthority
   echo "Xauthority: ${XAUTHORITY:-<none>}"
 
+elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  echo "Display: Wayland (${WAYLAND_DISPLAY}) — no X11 DISPLAY found"
+  echo "WARNING: native Wayland does not support absolute window positioning;"
+  echo "zone placement will not match the configured grid. Install/enable"
+  echo "XWayland for this session, or set DISPLAY to its socket, for correct layout."
+  USE_WAYLAND=1
+
 else
   # ── SSH / no-env path: probe sockets on the physical machine ─────────────
+  # X11 (including XWayland) first — see rationale above.
 
   for candidate in 0 1 2; do
     if [[ -S "/tmp/.X11-unix/X${candidate}" ]]; then
@@ -76,8 +91,9 @@ else
       if [[ -S "${RUNTIME_DIR}/${candidate}" ]]; then
         export WAYLAND_DISPLAY="${candidate}"
         export XDG_RUNTIME_DIR="${RUNTIME_DIR}"
-        echo "Display: Wayland auto-detected (${WAYLAND_DISPLAY})"
-        ELECTRON_FLAGS="$ELECTRON_FLAGS --ozone-platform=wayland --enable-features=UseOzonePlatform"
+        echo "Display: Wayland auto-detected (${WAYLAND_DISPLAY}) — no X11 DISPLAY found"
+        echo "WARNING: zone placement will not match the configured grid under native Wayland."
+        USE_WAYLAND=1
         break
       fi
     done
@@ -88,11 +104,15 @@ else
     echo "ERROR: No display server found."
     echo
     echo "If a desktop is running on the HDMI screen, set one of these and retry:"
-    echo "  export DISPLAY=:0                      # X11 / LXDE"
-    echo "  export WAYLAND_DISPLAY=wayland-0       # Wayland (labwc / wayfire)"
+    echo "  export DISPLAY=:0                      # X11 / XWayland (required for correct zone layout)"
+    echo "  export WAYLAND_DISPLAY=wayland-0       # Wayland fallback (zone positions will be wrong)"
     echo
     exit 1
   fi
+fi
+
+if [[ -n "${USE_WAYLAND:-}" ]]; then
+  ELECTRON_FLAGS="$ELECTRON_FLAGS --ozone-platform=wayland --enable-features=UseOzonePlatform"
 fi
 
 echo "Starting Wall Display (ARM)..."

@@ -191,6 +191,43 @@ function gridToPixelBounds(zone, columns, rows, displayBounds) {
   };
 }
 
+/**
+ * Log the raw display list and flag overlapping bounds. Overlapping bounds
+ * almost always mean the X11/Wayland session has the outputs in
+ * mirror/clone mode rather than side-by-side extend mode — in that case the
+ * union math in getTargetDisplayBounds() produces a canvas that doesn't
+ * match physical reality, and zones meant for the "second" monitor end up
+ * positioned on top of the first monitor's content instead of beside it.
+ */
+function logDisplayDiagnostics() {
+  const displays = screen.getAllDisplays();
+  const primaryId = screen.getPrimaryDisplay().id;
+  console.log(`[WALL] Detected ${displays.length} display(s):`);
+  for (const d of displays) {
+    console.log(
+      `  id=${d.id}${d.id === primaryId ? " (primary)" : ""} ` +
+      `bounds=${JSON.stringify(d.bounds)} scaleFactor=${d.scaleFactor} rotation=${d.rotation}`
+    );
+  }
+  for (let i = 0; i < displays.length; i++) {
+    for (let j = i + 1; j < displays.length; j++) {
+      const a = displays[i].bounds;
+      const b = displays[j].bounds;
+      const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+      const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+      if (overlapX > 0 && overlapY > 0) {
+        console.warn(
+          `[WALL] WARNING: displays ${displays[i].id} and ${displays[j].id} overlap by ${overlapX}x${overlapY}px. ` +
+          `This usually means the outputs are in mirror/clone mode instead of side-by-side extend mode. ` +
+          `Run 'xrandr --query' (X11) or 'wlr-randr' (Wayland) on the Pi to see output names, then set them ` +
+          `to extend, e.g.: xrandr --output HDMI-2 --right-of HDMI-1 --auto. ` +
+          `Zones will overlap/misplace until the outputs are arranged side by side.`
+        );
+      }
+    }
+  }
+}
+
 function getTargetDisplayBounds() {
   const allDisplays = screen.getAllDisplays();
   const selected = WALL_DISPLAY_IDS.length
@@ -475,6 +512,7 @@ function applyLayout(data) {
  * union and never correct themselves once the real arrangement settles.
  */
 function recomputeLayoutForCurrentDisplays() {
+  logDisplayDiagnostics();
   if (pairingWindow && !pairingWindow.isDestroyed()) {
     const bounds = getTargetDisplayBounds();
     pairingWindow.setBounds(bounds, false);
@@ -598,6 +636,7 @@ app.whenReady().then(() => {
     height: WALL_HEIGHT,
     pixelShiftIntervalMs: PIXEL_SHIFT_INTERVAL_MS,
   }));
+  logDisplayDiagnostics();
   globalShortcut.register("Escape", () => app.quit());
   globalShortcut.register("Control+Q", () => app.quit());
 
