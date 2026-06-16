@@ -130,14 +130,14 @@ const PIXEL_SHIFT_STEPS = [
 let isQuitting = false;
 /** @type {Map<string, BrowserWindow>} */
 let zoneWindows = new Map();
-/** @type {Map<string, {x:number,y:number,width:number,height:number}>} */
-let zoneBaseBounds = new Map();
 let backgroundWindow = null;
 let pairingWindow = null;
 let wsClient = null;
 let pollTimer = null;
 let pixelShiftTimer = null;
 let pixelShiftStepIndex = 0;
+let lastLayoutData = null;
+let displaySettleTimer = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -191,19 +191,6 @@ function gridToPixelBounds(zone, columns, rows, displayBounds) {
   };
 }
 
-function insetDisplayBounds(displayBounds, insetPx) {
-  const maxInsetX = Math.max(0, Math.floor((displayBounds.width - 100) / 2));
-  const maxInsetY = Math.max(0, Math.floor((displayBounds.height - 100) / 2));
-  const appliedInsetX = Math.min(insetPx, maxInsetX);
-  const appliedInsetY = Math.min(insetPx, maxInsetY);
-  return {
-    x: displayBounds.x + appliedInsetX,
-    y: displayBounds.y + appliedInsetY,
-    width: Math.max(100, displayBounds.width - appliedInsetX * 2),
-    height: Math.max(100, displayBounds.height - appliedInsetY * 2),
-  };
-}
-
 function getTargetDisplayBounds() {
   const allDisplays = screen.getAllDisplays();
   const selected = WALL_DISPLAY_IDS.length
@@ -251,12 +238,34 @@ function applyWindowDisplayCss(win) {
   const inject = () => {
     win.webContents.insertCSS(css).catch(() => {});
     win.setBackgroundColor("#000000");
+    applyContentShift(win);
   };
 
   win.webContents.on("did-finish-load", inject);
   // dom-ready fires before did-finish-load and ensures CSS is applied even
   // for pages that never fully load (e.g. slow content sources).
   win.webContents.on("dom-ready", inject);
+}
+
+/**
+ * Shift the rendered page content with a CSS transform instead of moving the
+ * native OS window. Moving the window itself (via setBounds) caused ghosting
+ * on Linux setups without a compositor (e.g. Raspberry Pi OS's default
+ * Openbox session) — the X server has nothing to repaint the area the window
+ * vacated, so old frames stack up visually over time. Transforming the
+ * content inside a window that never moves avoids touching the OS window
+ * manager entirely; Chromium repaints the transform internally regardless of
+ * GPU/compositor availability.
+ */
+function applyContentShift(win) {
+  if (!win || win.isDestroyed()) return;
+  const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
+  win.webContents
+    .executeJavaScript(
+      `document.documentElement.style.setProperty('transition', 'none', 'important');` +
+      `document.documentElement.style.setProperty('transform', 'translate(${step.x}px, ${step.y}px)', 'important');`
+    )
+    .catch(() => {});
 }
 
 function createDisplayWindow(bounds, { kiosk = false } = {}) {
@@ -273,6 +282,11 @@ function createDisplayWindow(bounds, { kiosk = false } = {}) {
     minimizable: false,
     maximizable: false,
     closable: false,
+    // Must stay non-focusable / hidden from the taskbar: on Linux WMs (e.g.
+    // Openbox on Raspberry Pi OS) a "normal" focusable window gets WM-drawn
+    // decorations/shadows, which corrupts the kiosk display — each pixel-shift
+    // reposition then leaves a shadowed ghost behind since there's no
+    // compositor to repaint the vacated area.
     focusable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -308,11 +322,9 @@ function closeZoneWindows() {
     }
   }
   zoneWindows.clear();
-  zoneBaseBounds.clear();
 }
 
 function disposeZoneWindow(zoneId, win) {
-  zoneBaseBounds.delete(zoneId);
   zoneWindows.delete(zoneId);
   if (!win || win.isDestroyed()) {
     return;
@@ -326,7 +338,6 @@ function disposeAllZoneWindows() {
     disposeZoneWindow(zoneId, win);
   }
   zoneWindows.clear();
-  zoneBaseBounds.clear();
 }
 
 function ensureBackgroundWindow() {
@@ -373,18 +384,8 @@ function ensureBackgroundWindow() {
 }
 
 function applyPixelShiftToWindows() {
-  const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
-  for (const [zoneId, win] of zoneWindows.entries()) {
-    if (!win || win.isDestroyed()) continue;
-    const base = zoneBaseBounds.get(zoneId);
-    if (!base) continue;
-    const shifted = {
-      x: base.x + step.x,
-      y: base.y + step.y,
-      width: base.width,
-      height: base.height,
-    };
-    win.setBounds(shifted, false);
+  for (const win of zoneWindows.values()) {
+    applyContentShift(win);
   }
 }
 
@@ -420,11 +421,12 @@ function showPairingScreen() {
 }
 
 function applyLayout(data) {
+  lastLayoutData = data;
   closePairingWindow();
   ensureBackgroundWindow();
 
   const { layout, zones } = data;
-  const displayBounds = insetDisplayBounds(getTargetDisplayBounds(), PIXEL_SHIFT_PX);
+  const displayBounds = getTargetDisplayBounds();
   const nextZones = zones.filter((zone) => zone.url);
   const nextIds = new Set(nextZones.map((zone) => String(zone.id)));
 
@@ -438,7 +440,6 @@ function applyLayout(data) {
     const zoneId = String(zone.id);
 
     const bounds = gridToPixelBounds(zone, layout.columns, layout.rows, displayBounds);
-    zoneBaseBounds.set(zoneId, bounds);
     let win = zoneWindows.get(zoneId);
     if (!win || win.isDestroyed()) {
       win = createDisplayWindow(bounds);
@@ -451,14 +452,10 @@ function applyLayout(data) {
       zoneWindows.set(zoneId, win);
     }
 
-    const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
-    const shifted = {
-      x: bounds.x + step.x,
-      y: bounds.y + step.y,
-      width: bounds.width,
-      height: bounds.height,
-    };
-    win.setBounds(shifted, false);
+    // The window itself never moves once placed — only its content shifts
+    // via CSS transform (see applyContentShift) — so bounds only need to be
+    // reapplied here when the grid/display layout actually changes.
+    win.setBounds(bounds, false);
     const currentUrl = win.webContents.getURL();
     if (currentUrl !== zone.url) {
       win.loadURL(zone.url);
@@ -467,6 +464,33 @@ function applyLayout(data) {
       win.showInactive();
     }
   }
+}
+
+/**
+ * Recompute display bounds and reposition whatever is currently on screen.
+ * Linux multi-monitor arrangement (xrandr/wlr-randr) can finish settling
+ * after Electron has already started and taken its first bounds snapshot —
+ * particularly on Raspberry Pi where HDMI outputs are detected asynchronously
+ * at boot. Without this, zones are sized/positioned against a stale display
+ * union and never correct themselves once the real arrangement settles.
+ */
+function recomputeLayoutForCurrentDisplays() {
+  if (pairingWindow && !pairingWindow.isDestroyed()) {
+    const bounds = getTargetDisplayBounds();
+    pairingWindow.setBounds(bounds, false);
+  }
+  if (lastLayoutData) {
+    applyLayout(lastLayoutData);
+  } else if (backgroundWindow && !backgroundWindow.isDestroyed()) {
+    ensureBackgroundWindow();
+  }
+}
+
+function scheduleDisplayRecompute() {
+  // Debounce — display-added/removed/metrics-changed can fire several times
+  // in quick succession while the OS finishes negotiating monitor modes.
+  clearTimeout(displaySettleTimer);
+  displaySettleTimer = setTimeout(recomputeLayoutForCurrentDisplays, 1_000);
 }
 
 // ── WebSocket connection ──────────────────────────────────────────────────────
@@ -577,6 +601,14 @@ app.whenReady().then(() => {
   globalShortcut.register("Escape", () => app.quit());
   globalShortcut.register("Control+Q", () => app.quit());
 
+  // Multi-monitor arrangement can still be settling (xrandr/wlr-randr) when
+  // this fires, especially on Raspberry Pi boot. Recompute bounds whenever
+  // the OS reports a display change so zones end up correctly sized/placed
+  // even if the very first snapshot was taken too early.
+  screen.on("display-added", scheduleDisplayRecompute);
+  screen.on("display-removed", scheduleDisplayRecompute);
+  screen.on("display-metrics-changed", scheduleDisplayRecompute);
+
   startPixelShiftLoop();
   loadLayout();
   connectWebSocket();
@@ -596,6 +628,13 @@ app.on("will-quit", () => {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
+  if (displaySettleTimer) {
+    clearTimeout(displaySettleTimer);
+    displaySettleTimer = null;
+  }
+  screen.removeAllListeners("display-added");
+  screen.removeAllListeners("display-removed");
+  screen.removeAllListeners("display-metrics-changed");
   globalShortcut.unregisterAll();
   closeBackgroundWindow();
   closePairingWindow();
