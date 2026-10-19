@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.device_auth import authenticate_device
 from app.models import Device, WallLayout
 from app.services import add_audit_log
 from app.websocket_hub import manager
@@ -67,6 +68,8 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
     async def upload_shot(device_id: str, display: int, request: Request, db: Session = Depends(get_db)) -> dict:
         if not 0 <= display < MAX_DISPLAYS:
             raise HTTPException(status_code=400, detail="Bad display index")
+        if not authenticate_device(db, device_id, request.headers.get("x-device-secret", "")):
+            raise HTTPException(status_code=401, detail="Invalid device credentials")
         if not db.get(Device, device_id):
             raise HTTPException(status_code=404, detail="Unknown device")
         body = await request.body()

@@ -6,8 +6,6 @@ from datetime import datetime
 
 import pytest
 
-os.environ["DB_PATH"] = "sqlite:///./_test_fixes.db"
-os.environ["ENCRYPTION_KEY"] = "a" * 43 + "="
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -23,7 +21,7 @@ def client():
         yield c
     main.engine.dispose()
     try:
-        os.remove("_test_fixes.db")
+        os.remove("_test.db")
     except OSError:
         pass
 
@@ -94,22 +92,22 @@ def test_input_is_audited_without_text(client):
 def test_old_database_gets_missing_columns():
     main.engine.dispose()
     try:
-        os.remove("_test_fixes.db")
+        os.remove("_test.db")
     except OSError:
         pass
-    con = sqlite3.connect("_test_fixes.db")
+    con = sqlite3.connect("_test.db")
     con.executescript("create table layouts(id integer primary key, name varchar(120), grid_configuration json);"
                       "create table layout_assignments(id integer primary key, layout_id int, zone_id varchar(100), source_id int, relative_path text);")
     con.commit()
     con.close()
     main._migrate_add_schedule_columns()
     main._migrate_add_schedule_columns()  # idempotent
-    con = sqlite3.connect("_test_fixes.db")
+    con = sqlite3.connect("_test.db")
     assert "assignment_type" in [r[1] for r in con.execute("pragma table_info(layout_assignments)")]
     assert "schedule_days" in [r[1] for r in con.execute("pragma table_info(layouts)")]
     con.close()
     main.engine.dispose()
-    os.remove("_test_fixes.db")
+    os.remove("_test.db")
 
 
 def test_ws_proxy_uses_websockets_14_header_kwarg(client, monkeypatch):

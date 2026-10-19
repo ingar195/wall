@@ -45,6 +45,7 @@ class Device(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="offline")
     current_layout_id: Mapped[int | None] = mapped_column(ForeignKey("layouts.id"), nullable=True)
     last_ping: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pairing_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     pairing_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

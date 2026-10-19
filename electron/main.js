@@ -21,7 +21,7 @@
  *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
-const { app, BrowserWindow, desktopCapturer, globalShortcut, net, screen } = require("electron");
+const { app, BrowserWindow, desktopCapturer, globalShortcut, net, screen, session } = require("electron");
 const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -116,6 +116,28 @@ function getDeviceId() {
 }
 
 const DEVICE_ID = getDeviceId();
+
+/**
+ * Per-device secret (trust-on-first-use on the server): sent with every request so knowing the
+ * device id alone is not enough to impersonate this screen. Generated once, kept in userData.
+ * Override with WALL_SECRET / config "secret". Admin can "Reset secret" if it is ever lost.
+ */
+function getDeviceSecret() {
+  const fromEnv = process.env.WALL_SECRET || _cfg.secret;
+  if (fromEnv) return String(fromEnv);
+  const secretPath = path.join(app.getPath("userData"), "device_secret.txt");
+  try {
+    const saved = fs.readFileSync(secretPath, "utf8").trim();
+    if (saved) return saved;
+  } catch (_) {}
+  const secret = require("crypto").randomBytes(32).toString("hex");
+  fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+  fs.writeFileSync(secretPath, secret, { encoding: "utf8", mode: 0o600 });
+  return secret;
+}
+
+const DEVICE_SECRET = getDeviceSecret();
+const AUTH_HEADERS = { "X-Device-Id": DEVICE_ID, "X-Device-Secret": DEVICE_SECRET };
 const API_URL = `${SERVER_BASE}/api/device/${encodeURIComponent(DEVICE_ID)}`;
 const WS_URL = SERVER_BASE.replace(/^http/, "ws") + `/ws/device/${encodeURIComponent(DEVICE_ID)}`;
 const PIXEL_SHIFT_PX = 20;
@@ -148,7 +170,7 @@ let displaySettleTimer = null;
 async function fetchJSON(url) {
   let res;
   try {
-    res = await net.fetch(url);
+    res = await net.fetch(url, { headers: AUTH_HEADERS });
   } catch (err) {
     throw new Error(`Network error: ${err.message}`);
   }
@@ -593,7 +615,7 @@ async function captureLoop() {
           if (!src) continue;
           await net.fetch(`${API_URL}/screenshot/${i}`, {
             method: "POST",
-            headers: { "Content-Type": "image/jpeg" },
+            headers: { ...AUTH_HEADERS, "Content-Type": "image/jpeg" },
             body: src.thumbnail.toJPEG(75),
           });
         }
@@ -703,6 +725,7 @@ function connectWebSocket() {
     // request passes WAF / Cloudflare bot checks that reject bare Node.js clients.
     wsClient = new WebSocket(WS_URL, {
       headers: {
+        ...AUTH_HEADERS,
         "Origin": SERVER_BASE,
         "User-Agent": `Mozilla/5.0 (X11; Linux ${process.arch}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36`,
       },
@@ -791,6 +814,14 @@ async function loadLayout() {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+  // Zone windows load pages/assets/WebSockets from the server (incl. /proxy); attach the device
+  // credentials to every request to *that origin only* (never to third-party hosts).
+  const serverUrl = new URL(SERVER_BASE);
+  const wsScheme = serverUrl.protocol === "https:" ? "wss" : "ws";
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${serverUrl.protocol}//${serverUrl.host}/*`, `${wsScheme}://${serverUrl.host}/*`] },
+    (details, callback) => callback({ requestHeaders: { ...details.requestHeaders, ...AUTH_HEADERS } })
+  );
   console.log("[CONFIG] loaded from:", _cfg.__loadedFrom || "defaults");
   console.log("[CONFIG] values:", JSON.stringify({
     server: SERVER_BASE,

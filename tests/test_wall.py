@@ -3,8 +3,6 @@ import re
 
 import pytest
 
-os.environ["DB_PATH"] = "sqlite:///./_test_wall.db"
-os.environ["ENCRYPTION_KEY"] = "a" * 43 + "="
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -18,7 +16,7 @@ CFG = {"columns": 2, "rows": 1, "tiles": [{"device": "d1", "display": 0, "x": 0,
 def client():
     with TestClient(app, base_url="http://localhost") as c:
         yield c
-    for f in ("_test_wall.db",):
+    for f in ("_test.db",):
         try:
             os.remove(f)
         except OSError:

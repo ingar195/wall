@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import settings
 from app.database import Base, engine, get_db
+from app.device_auth import authenticate_device
 from app.models import AuditLog, ContentSource, Device, Layout
 from app.services import (
     add_audit_log,
@@ -91,10 +92,13 @@ def _migrate_add_schedule_columns() -> None:
             ("schedule_days", "JSON"),
         ],
         "layout_assignments": [("assignment_type", "VARCHAR(20) NOT NULL DEFAULT 'redirect'")],
+        "devices": [("secret_hash", "VARCHAR(64)")],
     }
     inspector = inspect(engine)
     with engine.begin() as conn:
         for table, columns in migrations.items():
+            if table not in inspector.get_table_names():
+                continue
             existing = {c["name"] for c in inspector.get_columns(table)}
             for col, col_type in columns:
                 if col not in existing:
@@ -201,6 +205,18 @@ def login_failed(ip: str) -> None:
 
 def login_ok(ip: str) -> None:
     _login_fails.pop(ip, None)
+
+
+def require_device(db: Session, headers, device_id: str, create: bool = False) -> None:
+    if not authenticate_device(db, device_id, headers.get("x-device-secret", ""), create=create):
+        raise HTTPException(status_code=401, detail="Invalid device credentials")
+
+
+def proxy_allowed(session: dict, headers, db: Session) -> bool:
+    """/proxy injects source tokens: allow the admin session or an authenticated device (X-Device-Id + secret)."""
+    if session.get("admin_authenticated"):
+        return True
+    return authenticate_device(db, headers.get("x-device-id", ""), headers.get("x-device-secret", ""))
 
 
 def is_admin_authenticated(request: Request) -> bool:
@@ -549,6 +565,26 @@ async def admin_delete_device(
     return redirect("/admin")
 
 
+@app.post("/admin/devices/{device_id}/reset-secret")
+async def admin_reset_device_secret(
+    request: Request,
+    device_id: str,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Forget the device's secret; the next client to connect adopts its own (e.g. after reinstalling the client)."""
+    require_admin(request)
+    require_csrf(request, csrf_token)
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Unknown device")
+    device.secret_hash = None
+    db.add(device)
+    db.commit()
+    audit(request, db, "device.reset_secret", f"Reset secret for device {device.name} ({device.id})")
+    return redirect("/admin")
+
+
 @app.post("/admin/devices/{device_id}/refresh")
 async def admin_refresh_device(
     request: Request,
@@ -571,6 +607,7 @@ async def admin_refresh_device(
 @app.get("/api/device/{device_id}")
 async def api_device_layout(device_id: str, request: Request, db: Session = Depends(get_db)) -> dict:
     """JSON endpoint consumed by the Electron display client."""
+    require_device(db, request.headers, device_id, create=True)
     device = get_or_create_device(db, device_id)
     if not device.current_layout_id:
         device = ensure_pairing_code(db, device)
@@ -623,6 +660,7 @@ async def api_device_layout(device_id: str, request: Request, db: Session = Depe
 
 @app.get("/display/{device_id}", response_model=None)
 async def display_device(request: Request, device_id: str, db: Session = Depends(get_db)) -> Response:
+    require_device(db, request.headers, device_id, create=True)
     device = get_or_create_device(db, device_id)
     if not device.current_layout_id:
         device = ensure_pairing_code(db, device)
@@ -650,6 +688,9 @@ async def display_device(request: Request, device_id: str, db: Session = Depends
 
 @app.websocket("/ws/device/{device_id}")
 async def device_socket(websocket: WebSocket, device_id: str, db: Session = Depends(get_db)) -> None:
+    if not authenticate_device(db, device_id, websocket.headers.get("x-device-secret", ""), create=True):
+        await websocket.close(code=1008)
+        return
     await manager.connect(device_id, websocket)
     mark_device_seen(db, device_id)
     try:
@@ -668,6 +709,9 @@ async def device_socket(websocket: WebSocket, device_id: str, db: Session = Depe
 
 @app.websocket("/proxy/{target_app_id}/{path:path}")
 async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, db: Session = Depends(get_db)) -> None:
+    if not proxy_allowed(websocket.scope.get("session", {}), websocket.headers, db):
+        await websocket.close(code=1008)
+        return
     try:
         source, token = get_source_token(db, target_app_id)
     except ValueError:
@@ -724,6 +768,8 @@ async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, d
 
 @app.api_route("/proxy/{target_app_id}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 async def proxy_request(target_app_id: int, path: str, request: Request, db: Session = Depends(get_db)) -> Response:
+    if not proxy_allowed(request.scope.get("session", {}), request.headers, db):
+        raise HTTPException(status_code=401, detail="Proxy requires admin login or device credentials")
     try:
         source, token = get_source_token(db, target_app_id)
     except ValueError as exc:
@@ -746,7 +792,7 @@ async def proxy_request(target_app_id: int, path: str, request: Request, db: Ses
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length"}
+        if key.lower() not in {"host", "content-length", "x-device-id", "x-device-secret"}
     }
     if token.strip() and not is_public_status_source:
         headers["authorization"] = f"Bearer {token}"
