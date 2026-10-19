@@ -21,7 +21,8 @@
  *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
-const { app, BrowserWindow, globalShortcut, net, screen } = require("electron");
+const { app, BrowserWindow, desktopCapturer, globalShortcut, net, screen } = require("electron");
+const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const WebSocket = require("ws");
@@ -531,6 +532,118 @@ function scheduleDisplayRecompute() {
   displaySettleTimer = setTimeout(recomputeLayoutForCurrentDisplays, 1_000);
 }
 
+// ── Wall view: screenshots + remote input ─────────────────────────────────────
+// The admin wall page sends {action:"capture", ms} every couple of seconds while
+// someone is watching; we capture only while that lease is alive.
+
+let captureMs = 2500;
+let captureUntil = 0;
+let captureRunning = false;
+
+/** Stable display order (left→right, top→bottom) so "display 0" means the same screen everywhere. */
+function sortedDisplays() {
+  return screen.getAllDisplays().slice().sort((a, b) => a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y);
+}
+
+async function captureLoop() {
+  if (captureRunning) return;
+  captureRunning = true;
+  try {
+    while (Date.now() < captureUntil && !isQuitting) {
+      const started = Date.now();
+      try {
+        const displays = sortedDisplays();
+        const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 960, height: 540 } });
+        for (let i = 0; i < displays.length; i++) {
+          const src = sources.find((s) => s.display_id === String(displays[i].id)) || sources[i];
+          if (!src) continue;
+          await net.fetch(`${API_URL}/screenshot/${i}`, {
+            method: "POST",
+            headers: { "Content-Type": "image/jpeg" },
+            body: src.thumbnail.toJPEG(60),
+          });
+        }
+      } catch (err) {
+        console.error("[WALL] capture failed:", err.message);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      await new Promise((r) => setTimeout(r, Math.max(50, captureMs - (Date.now() - started))));
+    }
+  } finally {
+    captureRunning = false;
+  }
+}
+
+function onCaptureLease(ms) {
+  captureMs = Math.min(10_000, Math.max(300, Number(ms) || 2500));
+  captureUntil = Date.now() + 15_000;
+  captureLoop();
+}
+
+let lastInputWin = null; // zone window that received the last click; keys/text go there
+
+function runXdotool(...args) {
+  if (process.platform !== "linux") return;
+  execFile("xdotool", args, (err) => err && console.error("[WALL] xdotool:", err.message));
+}
+
+/**
+ * Inject a click/scroll/key/text from the admin wall page.
+ * Zone windows get Chromium input events (works in-page, no OS focus needed).
+ * Anything else (e.g. a native popup over the wall) falls back to xdotool on Linux.
+ * ponytail: no OS-level fallback on Windows; add SendInput via PowerShell if needed.
+ */
+function injectInput(msg) {
+  const d = sortedDisplays()[msg.display];
+  if (!d) return;
+  const gx = Math.round(d.bounds.x + msg.x * d.bounds.width);
+  const gy = Math.round(d.bounds.y + msg.y * d.bounds.height);
+
+  let target = null;
+  if (msg.kind === "click" || msg.kind === "scroll") {
+    target = Array.from(zoneWindows.values()).find((w) => {
+      if (w.isDestroyed()) return false;
+      const b = w.getBounds();
+      return gx >= b.x && gx < b.x + b.width && gy >= b.y && gy < b.y + b.height;
+    }) || null;
+    if (msg.kind === "click") lastInputWin = target;
+  } else {
+    target = lastInputWin && !lastInputWin.isDestroyed() ? lastInputWin : null;
+  }
+
+  if (target) {
+    const wc = target.webContents;
+    const b = target.getBounds();
+    const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex]; // content is CSS-shifted, undo it
+    const lx = gx - b.x - step.x, ly = gy - b.y - step.y;
+    if (msg.kind === "click") {
+      wc.sendInputEvent({ type: "mouseMove", x: lx, y: ly });
+      wc.sendInputEvent({ type: "mouseDown", x: lx, y: ly, button: msg.button, clickCount: 1 });
+      wc.sendInputEvent({ type: "mouseUp", x: lx, y: ly, button: msg.button, clickCount: 1 });
+    } else if (msg.kind === "scroll") {
+      wc.sendInputEvent({ type: "mouseWheel", x: lx, y: ly, deltaX: 0, deltaY: -msg.dy });
+    } else if (msg.kind === "text") {
+      wc.insertText(msg.text);
+    } else if (msg.kind === "key" && msg.key) {
+      wc.sendInputEvent({ type: "keyDown", keyCode: msg.key });
+      wc.sendInputEvent({ type: "keyUp", keyCode: msg.key });
+    }
+    return;
+  }
+
+  const px = Math.round(gx * d.scaleFactor), py = Math.round(gy * d.scaleFactor);
+  if (msg.kind === "click") {
+    runXdotool("mousemove", String(px), String(py), "click", msg.button === "right" ? "3" : "1");
+  } else if (msg.kind === "scroll") {
+    runXdotool("mousemove", String(px), String(py), "click", msg.dy > 0 ? "5" : "4");
+  } else if (msg.kind === "text") {
+    runXdotool("type", "--delay", "20", "--", msg.text);
+  } else if (msg.kind === "key") {
+    const map = { Enter: "Return", Escape: "Escape", Tab: "Tab", Backspace: "BackSpace", Up: "Up", Down: "Down", Left: "Left", Right: "Right", Delete: "Delete" };
+    if (map[msg.key]) runXdotool("key", map[msg.key]);
+  }
+}
+
 // ── WebSocket connection ──────────────────────────────────────────────────────
 
 function connectWebSocket() {
@@ -561,6 +674,10 @@ function connectWebSocket() {
         if (msg.action === "refresh" || msg.action === "new_layout") {
           console.log("[WS] layout change — reloading");
           loadLayout();
+        } else if (msg.action === "capture") {
+          onCaptureLease(msg.ms);
+        } else if (msg.action === "input") {
+          injectInput(msg);
         } else if (msg.type === "pong") {
           // no-op
         }

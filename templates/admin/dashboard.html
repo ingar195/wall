@@ -31,7 +31,8 @@
         <button class="tab-btn" role="tab" aria-controls="tab-layouts" aria-selected="false" data-tab="layouts">Layouts</button>
         <button class="tab-btn" role="tab" aria-controls="tab-devices" aria-selected="false" data-tab="devices">Devices</button>
         <button class="tab-btn" role="tab" aria-controls="tab-audit-log" aria-selected="false" data-tab="audit-log">Audit Log</button>
-                
+        <a href="/admin/wall" class="logout" style="text-decoration:none;padding:8px 14px">Wall view</a>
+
         <form method="post" action="/admin/logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="logout">Log Out</button>

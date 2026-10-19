@@ -66,6 +66,20 @@ class LayoutAssignment(Base):
     source: Mapped[ContentSource] = relationship()
 
 
+class WallLayout(Base):
+    """Admin 'wall view' arrangement: which device display shows in which tile.
+
+    config = {"columns": int, "rows": int,
+              "tiles": [{"device": str, "display": int, "x": int, "y": int, "w": int, "h": int, "label": str}]}
+    """
+
+    __tablename__ = "wall_layouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

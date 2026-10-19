@@ -46,6 +46,7 @@ from app.services import (
     update_device,
     update_layout,
 )
+from app.wall import make_wall_router
 from app.websocket_hub import manager
 
 
@@ -171,6 +172,10 @@ def require_csrf(request: Request, submitted_token: str) -> None:
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
+def require_csrf_header(request: Request) -> None:
+    require_csrf(request, request.headers.get("x-csrf-token", ""))
+
+
 def is_admin_authenticated(request: Request) -> bool:
     return bool(request.scope.get("session", {}).get("admin_authenticated"))
 
@@ -218,6 +223,9 @@ def render_devices_panel(request: Request, db: Session) -> HTMLResponse:
             "csrf_token": get_or_create_csrf_token(request),
         },
     )
+
+
+app.include_router(make_wall_router(require_admin, require_csrf_header, get_or_create_csrf_token, templates))
 
 
 @app.get("/", response_class=HTMLResponse)
