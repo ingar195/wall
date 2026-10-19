@@ -52,18 +52,36 @@ resolve_xauthority() {
 # This app positions one native window per zone with absolute screen
 # coordinates (win.setBounds({x,y,...})). Native Wayland does not let clients
 # set absolute toplevel position — only the compositor decides placement —
-# so under --ozone-platform=wayland every zone window lands wherever the
-# compositor's own placement policy puts it (typically a cascade/offset from
-# the previous window), completely ignoring the configured grid. X11 (either
-# a real X server or XWayland, which labwc/wayfire normally provide
-# alongside native Wayland) honors absolute positioning, so it is strongly
-# preferred even when WAYLAND_DISPLAY is also set.
+# so under Wayland every zone window lands wherever the compositor's own
+# placement policy puts it (typically a cascade/offset from the previous
+# window), completely ignoring the configured grid. X11 (either a real X
+# server or XWayland, which labwc/wayfire normally provide alongside native
+# Wayland) honors absolute positioning, so it is strongly preferred even
+# when WAYLAND_DISPLAY is also set.
 unset USE_WAYLAND
+
+# Probe for an X11 socket directly if DISPLAY isn't already exported (SSH
+# sessions don't inherit it even when a desktop/XWayland is running).
+if [[ -z "${DISPLAY:-}" ]]; then
+  for candidate in 0 1 2; do
+    if [[ -S "/tmp/.X11-unix/X${candidate}" ]]; then
+      export DISPLAY=":${candidate}"
+      break
+    fi
+  done
+fi
 
 if [[ -n "${DISPLAY:-}" ]]; then
   echo "Display: X11 (${DISPLAY})"
   resolve_xauthority
   echo "Xauthority: ${XAUTHORITY:-<none>}"
+  # Chromium's ozone "auto" platform selection prefers Wayland whenever
+  # WAYLAND_DISPLAY is set — even with no --ozone-platform flag at all —
+  # which is exactly the case in an XWayland session where both DISPLAY and
+  # WAYLAND_DISPLAY are present. Force X11 explicitly and unset
+  # WAYLAND_DISPLAY for the child process so it cannot be auto-selected.
+  ELECTRON_FLAGS="$ELECTRON_FLAGS --ozone-platform=x11"
+  unset WAYLAND_DISPLAY
 
 elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
   echo "Display: Wayland (${WAYLAND_DISPLAY}) — no X11 DISPLAY found"
@@ -73,33 +91,21 @@ elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
   USE_WAYLAND=1
 
 else
-  # ── SSH / no-env path: probe sockets on the physical machine ─────────────
-  # X11 (including XWayland) first — see rationale above.
-
-  for candidate in 0 1 2; do
-    if [[ -S "/tmp/.X11-unix/X${candidate}" ]]; then
-      export DISPLAY=":${candidate}"
-      resolve_xauthority
-      echo "Display: X11 auto-detected (${DISPLAY}), Xauthority: ${XAUTHORITY:-<none>}"
+  # No DISPLAY and no WAYLAND_DISPLAY at all — probe a Wayland socket
+  # directly as a last resort before giving up.
+  RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  for candidate in wayland-0 wayland-1; do
+    if [[ -S "${RUNTIME_DIR}/${candidate}" ]]; then
+      export WAYLAND_DISPLAY="${candidate}"
+      export XDG_RUNTIME_DIR="${RUNTIME_DIR}"
+      echo "Display: Wayland auto-detected (${WAYLAND_DISPLAY}) — no X11 DISPLAY found"
+      echo "WARNING: zone placement will not match the configured grid under native Wayland."
+      USE_WAYLAND=1
       break
     fi
   done
 
-  if [[ -z "${DISPLAY:-}" ]]; then
-    RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-    for candidate in wayland-0 wayland-1; do
-      if [[ -S "${RUNTIME_DIR}/${candidate}" ]]; then
-        export WAYLAND_DISPLAY="${candidate}"
-        export XDG_RUNTIME_DIR="${RUNTIME_DIR}"
-        echo "Display: Wayland auto-detected (${WAYLAND_DISPLAY}) — no X11 DISPLAY found"
-        echo "WARNING: zone placement will not match the configured grid under native Wayland."
-        USE_WAYLAND=1
-        break
-      fi
-    done
-  fi
-
-  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+  if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
     echo
     echo "ERROR: No display server found."
     echo
