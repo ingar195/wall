@@ -1,5 +1,5 @@
 {
-  "server": "https://test.angry.fish",
+  "server": "http://127.0.0.1:8000",
   "kiosk": true,
   "pixelShiftIntervalMs": 30000,
   "displayMode": "primary",

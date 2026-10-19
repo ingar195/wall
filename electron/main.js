@@ -590,6 +590,14 @@ let captureMs = 2500;
 let captureUntil = 0;
 let captureRunning = false;
 let captureFallbackWarned = false;
+let wakeCapture = null; // interrupts the capture loop's sleep
+let captureFull = null; // display index being viewed fullscreen -> capture it at native resolution
+
+/** After an input, grab a fresh frame soon so the admin sees the effect (and stops re-clicking). */
+function nudgeCapture() {
+  captureUntil = Math.max(captureUntil, Date.now() + 15_000);
+  setTimeout(() => (wakeCapture ? wakeCapture() : captureLoop()), 150);
+}
 
 /** Stable display order (left→right, top→bottom) so "display 0" means the same screen everywhere. */
 function sortedDisplays() {
@@ -604,8 +612,14 @@ async function captureLoop() {
       const started = Date.now();
       try {
         const displays = sortedDisplays();
-        const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1280, height: 720 } });
+        // Fullscreen viewing: native pixels of that one display (only it is uploaded); otherwise 720p of all.
+        const full = captureFull !== null && displays[captureFull] ? displays[captureFull] : null;
+        const thumbnailSize = full
+          ? { width: Math.round(full.bounds.width * full.scaleFactor), height: Math.round(full.bounds.height * full.scaleFactor) }
+          : { width: 1280, height: 720 };
+        const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
         for (let i = 0; i < displays.length; i++) {
+          if (full && i !== captureFull) continue;
           let src = sources.find((s) => s.display_id === String(displays[i].id));
           if (!src) {
             // ponytail: some X11 setups report no display_id; index order may not match left→right order
@@ -616,22 +630,27 @@ async function captureLoop() {
           await net.fetch(`${API_URL}/screenshot/${i}`, {
             method: "POST",
             headers: { ...AUTH_HEADERS, "Content-Type": "image/jpeg" },
-            body: src.thumbnail.toJPEG(75),
+            body: src.thumbnail.toJPEG(full ? 90 : 75),
           });
         }
       } catch (err) {
         console.error("[WALL] capture failed:", err.message);
         await new Promise((r) => setTimeout(r, 3000));
       }
-      await new Promise((r) => setTimeout(r, Math.max(50, captureMs - (Date.now() - started))));
+      await new Promise((r) => {
+        const t = setTimeout(r, Math.max(50, captureMs - (Date.now() - started)));
+        wakeCapture = () => { clearTimeout(t); r(); };
+      });
+      wakeCapture = null;
     }
   } finally {
     captureRunning = false;
   }
 }
 
-function onCaptureLease(ms) {
+function onCaptureLease(ms, fullDisplay) {
   captureMs = Math.min(10_000, Math.max(300, Number(ms) || 2500));
+  captureFull = Number.isInteger(fullDisplay) ? fullDisplay : null;
   captureUntil = Date.now() + 15_000;
   captureLoop();
 }
@@ -689,14 +708,20 @@ function injectInput(msg) {
     const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex]; // content is CSS-shifted, undo it
     const lx = gx - b.x - step.x, ly = gy - b.y - step.y;
     if (msg.kind === "click") {
+      wc.focus(); // without this the first clicks only hover/focus; typed text then goes nowhere
       wc.sendInputEvent({ type: "mouseMove", x: lx, y: ly });
-      wc.sendInputEvent({ type: "mouseDown", x: lx, y: ly, button: msg.button, clickCount: 1 });
-      wc.sendInputEvent({ type: "mouseUp", x: lx, y: ly, button: msg.button, clickCount: 1 });
+      setTimeout(() => {
+        if (wc.isDestroyed()) return;
+        wc.sendInputEvent({ type: "mouseDown", x: lx, y: ly, button: msg.button, clickCount: 1 });
+        setTimeout(() => !wc.isDestroyed() && wc.sendInputEvent({ type: "mouseUp", x: lx, y: ly, button: msg.button, clickCount: 1 }), 40);
+      }, 40);
     } else if (msg.kind === "scroll") {
       wc.sendInputEvent({ type: "mouseWheel", x: lx, y: ly, deltaX: 0, deltaY: -msg.dy });
     } else if (msg.kind === "text") {
+      wc.focus();
       wc.insertText(msg.text);
     } else if (msg.kind === "key" && msg.key) {
+      wc.focus();
       wc.sendInputEvent({ type: "keyDown", keyCode: msg.key });
       wc.sendInputEvent({ type: "keyUp", keyCode: msg.key });
     }
@@ -748,9 +773,10 @@ function connectWebSocket() {
           console.log("[WS] layout change — reloading");
           loadLayout();
         } else if (msg.action === "capture") {
-          onCaptureLease(msg.ms);
+          onCaptureLease(msg.ms, msg.full ? msg.display : null);
         } else if (msg.action === "input") {
           injectInput(msg);
+          nudgeCapture();
         } else if (msg.type === "pong") {
           // no-op
         }

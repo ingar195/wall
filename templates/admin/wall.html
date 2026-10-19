@@ -111,7 +111,7 @@
     let inputQueue = Promise.resolve();
     function sendInput(tile, extra) {
         inputQueue = inputQueue.then(() => post("/admin/wall/input", { device: tile.cfg.device, display: tile.cfg.display, ...extra }))
-            .then((r) => { if (!r.delivered) $("status").textContent = "Device offline"; })
+            .then((r) => { if (!r.delivered) $("status").textContent = "Device offline"; else { pollSoon(300); setTimeout(() => pollSoon(0), 900); } })
             .catch((err) => { $("status").textContent = err.message; });
     }
 
@@ -136,6 +136,8 @@
 
     // Fullscreen the controlled tile; the browser itself exits on Esc (that Esc is not forwarded).
     $("fsBtn").onclick = () => selected && $("stage").requestFullscreen();
+    // Entering/leaving fullscreen changes the requested resolution: refresh right away.
+    document.addEventListener("fullscreenchange", () => pollSoon(0));
     $("stopBtn").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); select(null); };
     $("txt").addEventListener("keydown", (e) => {
         if (e.key === "Enter" && selected) { sendInput(selected, { kind: "text", text: e.target.value }); e.target.value = ""; }
@@ -152,10 +154,14 @@
     });
 
     // Poll: renews capture leases on the devices and tells us which screenshots are new.
+    let pollTimer = null;
+    // Single poll chain; also used to refresh quickly right after an input so its effect shows up.
+    function pollSoon(ms) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }
+
     async function poll() {
         const ids = [...new Set(config.tiles.map((t) => t.device))];
         try {
-            const state = await post("/admin/wall/watch", { devices: ids, control: selected && selected.cfg.device });
+            const state = await post("/admin/wall/watch", { devices: ids, control: selected && selected.cfg.device, display: selected ? selected.cfg.display : 0, full: !!document.fullscreenElement });
             for (const tile of tiles) {
                 const d = state[tile.cfg.device];
                 const ts = d && d.shots[tile.cfg.display];
@@ -164,7 +170,7 @@
             }
             $("status").textContent = "";
         } catch (err) { $("status").textContent = err.message; }
-        setTimeout(poll, selected ? 400 : 2000);
+        pollSoon(selected ? 400 : 2000);
     }
 
     // Layout editing

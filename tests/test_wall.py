@@ -48,7 +48,7 @@ def test_screenshot_roundtrip_and_watch(admin):
 def test_screenshot_unknown_device_and_oversize(admin):
     c, _ = admin
     assert c.post("/api/device/nope/screenshot/0", content=b"x").status_code == 404
-    assert c.post("/api/device/d1/screenshot/0", content=b"x" * (3 * 1024 * 1024 + 1)).status_code == 413
+    assert c.post("/api/device/d1/screenshot/0", content=b"x" * (8 * 1024 * 1024 + 1)).status_code == 413
 
 
 def test_layout_save_update_delete(admin):
@@ -85,3 +85,12 @@ def test_admin_routes_require_login(client):
 
 def test_splash_page(client):
     assert "bounce" in client.get("/splash").text
+
+
+def test_fullscreen_watch_requests_native_resolution_for_that_display(admin):
+    c, h = admin
+    with c.websocket_connect("/ws/device/d1", headers={"host": "localhost"}) as ws:
+        c.post("/admin/wall/watch", json={"devices": ["d1"], "control": "d1", "display": 1, "full": True}, headers=h)
+        assert ws.receive_json() == {"action": "capture", "ms": 400, "full": True, "display": 1}
+        c.post("/admin/wall/watch", json={"devices": ["d1"], "control": "d1", "display": 1}, headers=h)
+        assert ws.receive_json() == {"action": "capture", "ms": 400}  # not fullscreen -> normal quality

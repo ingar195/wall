@@ -18,7 +18,7 @@ from app.models import Device, WallLayout
 from app.services import add_audit_log
 from app.websocket_hub import manager
 
-MAX_SHOT_BYTES = 3 * 1024 * 1024
+MAX_SHOT_BYTES = 8 * 1024 * 1024  # native-resolution fullscreen frames
 MAX_DISPLAYS = 16
 INPUT_KINDS = {"click", "key", "text", "scroll"}
 
@@ -135,13 +135,18 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
         require_csrf_header(request)
         data = await request.json()
         control = data.get("control")  # the device being remote-controlled captures faster
+        full = bool(data.get("full"))  # viewer is fullscreen: ask for native resolution of that display
+        control_display = max(0, min(MAX_DISPLAYS - 1, int(data.get("display", 0))))
         out = {}
         for device_id in {str(d) for d in data.get("devices", [])}:
             device = db.get(Device, device_id)
             if not device:
                 continue
             ms = 400 if device_id == control else 2500
-            online = await manager.send(device_id, {"action": "capture", "ms": ms})
+            lease = {"action": "capture", "ms": ms}
+            if full and device_id == control:
+                lease.update(full=True, display=control_display)
+            online = await manager.send(device_id, lease)
             out[device_id] = {
                 "name": device.name,
                 "online": online,
