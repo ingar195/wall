@@ -4,6 +4,7 @@ import logging
 import json
 import re
 import secrets
+import time
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
@@ -80,23 +81,25 @@ def initialize_database_schema() -> None:
 
 
 def _migrate_add_schedule_columns() -> None:
-    from sqlalchemy import text
-    migrations = [
-        ("schedule_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
-        ("schedule_start", "VARCHAR(5)"),
-        ("schedule_end", "VARCHAR(5)"),
-        ("schedule_days", "JSON"),
-    ]
+    """Add columns introduced after first release to existing databases."""
+    from sqlalchemy import inspect, text
+    migrations = {
+        "layouts": [
+            ("schedule_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("schedule_start", "VARCHAR(5)"),
+            ("schedule_end", "VARCHAR(5)"),
+            ("schedule_days", "JSON"),
+        ],
+        "layout_assignments": [("assignment_type", "VARCHAR(20) NOT NULL DEFAULT 'redirect'")],
+    }
+    inspector = inspect(engine)
     with engine.begin() as conn:
-        for col, col_type in migrations:
-            try:
-                conn.execute(text(f"ALTER TABLE layouts ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass  # Column already exists
-        try:
-            conn.execute(text("ALTER TABLE layout_assignments ADD COLUMN assignment_type VARCHAR(20) NOT NULL DEFAULT 'redirect'"))
-        except Exception:
-            pass
+        for table, columns in migrations.items():
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            for col, col_type in columns:
+                if col not in existing:
+                    logger.info("Migrating: adding %s.%s", table, col)
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
 
 
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
@@ -180,6 +183,26 @@ def require_csrf_header(request: Request) -> None:
     require_csrf(request, request.headers.get("x-csrf-token", ""))
 
 
+# ponytail: per-process, per-IP (behind a proxy this is the proxy's IP unless TRUSTED_PROXY_IPS is set)
+LOGIN_MAX_FAILS, LOGIN_WINDOW_S = 5, 300
+_login_fails: dict[str, list[float]] = {}
+
+
+def login_is_locked(ip: str) -> bool:
+    now = time.time()
+    fails = [t for t in _login_fails.get(ip, []) if now - t < LOGIN_WINDOW_S]
+    _login_fails[ip] = fails
+    return len(fails) >= LOGIN_MAX_FAILS
+
+
+def login_failed(ip: str) -> None:
+    _login_fails.setdefault(ip, []).append(time.time())
+
+
+def login_ok(ip: str) -> None:
+    _login_fails.pop(ip, None)
+
+
 def is_admin_authenticated(request: Request) -> bool:
     return bool(request.scope.get("session", {}).get("admin_authenticated"))
 
@@ -251,8 +274,13 @@ async def admin_login_page(request: Request) -> Response:
 @app.post("/admin/login")
 async def admin_login(request: Request, password: str = Form(...), csrf_token: str = Form(...)) -> RedirectResponse:
     require_csrf(request, csrf_token)
-    if password != settings.admin_password:
+    ip = request.client.host if request.client else ""
+    if login_is_locked(ip):
+        raise HTTPException(status_code=429, detail="Too many failed logins, try again later")
+    if not secrets.compare_digest(password.encode(), settings.admin_password.encode()):
+        login_failed(ip)
         return redirect("/admin/login?error=1")
+    login_ok(ip)
     request.session["admin_authenticated"] = True
     request.session["admin_actor"] = "admin"
     return redirect("/admin")
@@ -658,7 +686,7 @@ async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, d
     try:
         async with websockets.connect(
             upstream_url,
-            extra_headers=({"Authorization": f"Bearer {token}"} if token.strip() and not is_public_status_source else None),
+            additional_headers=({"Authorization": f"Bearer {token}"} if token.strip() and not is_public_status_source else None),
             open_timeout=10,
         ) as upstream:
             async def client_to_upstream() -> None:
@@ -686,7 +714,7 @@ async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, d
             for t in pending:
                 t.cancel()
     except Exception:
-        pass
+        logger.exception("WebSocket proxy to %s failed", upstream_url)
     finally:
         try:
             await websocket.close()

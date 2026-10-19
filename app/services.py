@@ -113,9 +113,13 @@ def is_layout_active_now(layout: Layout) -> bool:
             return False
 
     current_hhmm = now.strftime("%H:%M")
-    if layout.schedule_start and current_hhmm < layout.schedule_start:
+    start, end = layout.schedule_start, layout.schedule_end
+    if start and end and start > end:
+        # overnight window (e.g. 22:00-06:00): active late evening OR early morning
+        return current_hhmm >= start or current_hhmm < end
+    if start and current_hhmm < start:
         return False
-    if layout.schedule_end and current_hhmm >= layout.schedule_end:
+    if end and current_hhmm >= end:
         return False
     return True
 

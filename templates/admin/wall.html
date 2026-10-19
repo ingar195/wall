@@ -107,8 +107,10 @@
         return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
     }
 
+    // One request at a time so fast typing can't arrive out of order.
+    let inputQueue = Promise.resolve();
     function sendInput(tile, extra) {
-        post("/admin/wall/input", { device: tile.cfg.device, display: tile.cfg.display, ...extra })
+        inputQueue = inputQueue.then(() => post("/admin/wall/input", { device: tile.cfg.device, display: tile.cfg.display, ...extra }))
             .then((r) => { if (!r.delivered) $("status").textContent = "Device offline"; })
             .catch((err) => { $("status").textContent = err.message; });
     }

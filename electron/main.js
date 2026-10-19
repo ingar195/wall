@@ -567,6 +567,7 @@ function scheduleDisplayRecompute() {
 let captureMs = 2500;
 let captureUntil = 0;
 let captureRunning = false;
+let captureFallbackWarned = false;
 
 /** Stable display order (left→right, top→bottom) so "display 0" means the same screen everywhere. */
 function sortedDisplays() {
@@ -583,7 +584,12 @@ async function captureLoop() {
         const displays = sortedDisplays();
         const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1280, height: 720 } });
         for (let i = 0; i < displays.length; i++) {
-          const src = sources.find((s) => s.display_id === String(displays[i].id)) || sources[i];
+          let src = sources.find((s) => s.display_id === String(displays[i].id));
+          if (!src) {
+            // ponytail: some X11 setups report no display_id; index order may not match left→right order
+            if (!captureFallbackWarned) { console.warn("[WALL] capture: no display_id match, falling back to source order"); captureFallbackWarned = true; }
+            src = sources[i];
+          }
           if (!src) continue;
           await net.fetch(`${API_URL}/screenshot/${i}`, {
             method: "POST",

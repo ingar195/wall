@@ -14,9 +14,11 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Device, WallLayout
+from app.services import add_audit_log
 from app.websocket_hub import manager
 
 MAX_SHOT_BYTES = 3 * 1024 * 1024
+MAX_DISPLAYS = 16
 INPUT_KINDS = {"click", "key", "text", "scroll"}
 
 # (device_id, display_index) -> (jpeg bytes, unix timestamp). In-memory on purpose:
@@ -63,6 +65,8 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
     # ── device side ──────────────────────────────────────────────────────────
     @router.post("/api/device/{device_id}/screenshot/{display}")
     async def upload_shot(device_id: str, display: int, request: Request, db: Session = Depends(get_db)) -> dict:
+        if not 0 <= display < MAX_DISPLAYS:
+            raise HTTPException(status_code=400, detail="Bad display index")
         if not db.get(Device, device_id):
             raise HTTPException(status_code=404, detail="Unknown device")
         body = await request.body()
@@ -151,7 +155,7 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
         return Response(shot[0], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @router.post("/admin/wall/input")
-    async def send_input(request: Request) -> dict:
+    async def send_input(request: Request, db: Session = Depends(get_db)) -> dict:
         require_admin(request)
         require_csrf_header(request)
         data = await request.json()
@@ -160,7 +164,7 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
         msg = {
             "action": "input",
             "kind": data["kind"],
-            "display": int(data.get("display", 0)),
+            "display": min(MAX_DISPLAYS - 1, max(0, int(data.get("display", 0)))),
             "x": min(1.0, max(0.0, float(data.get("x", 0)))),
             "y": min(1.0, max(0.0, float(data.get("y", 0)))),
             "button": "right" if data.get("button") == "right" else "left",
@@ -168,7 +172,11 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
             "text": str(data.get("text", ""))[:500],
             "dy": max(-2000, min(2000, int(data.get("dy", 0)))),
         }
-        return {"delivered": await manager.send(str(data.get("device", "")), msg)}
+        device_id = str(data.get("device", ""))
+        if msg["kind"] != "scroll":  # scroll is noise; never log typed text (may be a password)
+            actor = request.scope.get("session", {}).get("admin_actor", "admin")
+            add_audit_log(db, actor=actor, action="wall.input", details=f"{msg['kind']} on {device_id} display {msg['display']}")
+        return {"delivered": await manager.send(device_id, msg)}
 
     @router.get("/splash", response_class=HTMLResponse)
     async def splash(request: Request) -> HTMLResponse:
