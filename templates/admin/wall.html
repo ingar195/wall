@@ -9,12 +9,19 @@
     .wall-bar select, .wall-bar input, .wall-bar button, .wall-bar a { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: var(--panel-strong); color: var(--text); text-decoration: none; cursor: pointer; }
     .wall-grid { display: grid; gap: 6px; }
     .wall-tile { position: relative; background: #000; border: 2px solid var(--panel-border); border-radius: 6px; overflow: hidden; }
-    .wall-tile img { width: 100%; height: 100%; object-fit: contain; display: block; user-select: none; -webkit-user-drag: none; }
+    .wall-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; user-select: none; -webkit-user-drag: none; }
     .wall-tile .lbl { position: absolute; left: 6px; top: 4px; font-size: 12px; padding: 1px 6px; border-radius: 6px; background: rgba(0,0,0,.65); pointer-events: none; }
     .wall-tile.offline { opacity: .45; }
     .wall-tile.selected { border-color: var(--accent); cursor: crosshair; }
-    #ctl { display: none; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding: 8px; background: var(--panel); border-radius: 8px; }
+    /* fixed so showing it never shifts the tiles under the cursor */
+    #ctl { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; gap: 6px; align-items: center; flex-wrap: wrap; padding: 8px 16px; background: var(--panel); border-top: 1px solid var(--panel-border); }
     #ctl.on { display: flex; }
+    #stage:fullscreen { background: var(--bg); display: flex; flex-direction: column-reverse; }
+    #stage:fullscreen #ctl { position: static; }
+    #stage:fullscreen .wall-grid { flex: 1; min-height: 0; display: block; }
+    #stage:fullscreen .wall-tile:not(.selected) { display: none; }
+    #stage:fullscreen .wall-tile.selected { aspect-ratio: auto !important; width: 100%; height: 100%; border-width: 0; border-radius: 0; }
+    .wall-tile:fullscreen { aspect-ratio: auto !important; width: 100vw; height: 100vh; border: 0; border-radius: 0; }
     #editor { display: none; width: 100%; height: 240px; font-family: monospace; background: var(--field-bg); color: var(--text); border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
     #editor.on { display: block; }
     .wall-tools { display: none; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
@@ -41,16 +48,19 @@
     </div>
     <textarea id="editor" spellcheck="false"></textarea>
 
+    <div id="stage">
     <div id="ctl">
         <strong id="ctlName"></strong>
         <input id="txt" placeholder="Type text, press Enter to send" size="28">
         <button data-key="Escape">Esc</button><button data-key="Enter">Enter</button><button data-key="Tab">Tab</button>
-        <button data-key="Backspace">Bksp</button><button data-key="Up">&uarr;</button><button data-key="Down">&darr;</button>
+        <button data-key="Super">Win</button><button data-key="Backspace">Bksp</button><button data-key="Up">&uarr;</button><button data-key="Down">&darr;</button>
+        <button id="fsBtn">Fullscreen (Esc exits)</button>
         <button id="stopBtn">Stop control</button>
         <span class="muted">Click the tile to click on that screen; wheel scrolls; right-click = right button.</span>
     </div>
 
     <div class="wall-grid" id="grid"></div>
+    </div>
 </main>
 
 <script>
@@ -79,6 +89,7 @@
             el.innerHTML = `<img alt=""><span class="lbl"></span>`;
             el.querySelector(".lbl").textContent = t.label || `${t.device} #${t.display + 1}`;
             const tile = { el, img: el.querySelector("img"), cfg: t, ts: 0 };
+            tile.img.onload = () => { tile.size = `${tile.img.naturalWidth}x${tile.img.naturalHeight}`; if (selected === tile) $("ctlName").textContent = label(tile); };
             el.addEventListener("click", (e) => onTileClick(tile, e, "left"));
             el.addEventListener("contextmenu", (e) => { e.preventDefault(); onTileClick(tile, e, "right"); });
             el.addEventListener("wheel", (e) => { if (selected === tile) { e.preventDefault(); sendInput(tile, { kind: "scroll", dy: Math.round(e.deltaY) }); } }, { passive: false });
@@ -102,19 +113,28 @@
             .catch((err) => { $("status").textContent = err.message; });
     }
 
+    const label = (tile) => `${tile.cfg.label || tile.cfg.device} ${tile.size || ""}`;
+
     function select(tile) {
         selected = tile;
         tiles.forEach((t) => t.el.classList.toggle("selected", t === tile));
         $("ctl").classList.toggle("on", !!tile);
-        if (tile) $("ctlName").textContent = tile.cfg.label || tile.cfg.device;
+        if (tile) $("ctlName").textContent = label(tile);
     }
 
     function onTileClick(tile, e, button) {
-        if (selected !== tile) { select(tile); return; }
+        if (selected !== tile) {
+            select(tile);
+            // Starting control goes fullscreen (needs this click's user gesture); Esc exits.
+            if (!document.fullscreenElement) $("stage").requestFullscreen().catch(() => {});
+            return;
+        }
         sendInput(tile, { kind: "click", button, ...normCoords(tile, e) });
     }
 
-    $("stopBtn").onclick = () => select(null);
+    // Fullscreen the controlled tile; the browser itself exits on Esc (that Esc is not forwarded).
+    $("fsBtn").onclick = () => selected && $("stage").requestFullscreen();
+    $("stopBtn").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); select(null); };
     $("txt").addEventListener("keydown", (e) => {
         if (e.key === "Enter" && selected) { sendInput(selected, { kind: "text", text: e.target.value }); e.target.value = ""; }
     });

@@ -93,6 +93,10 @@ def _migrate_add_schedule_columns() -> None:
                 conn.execute(text(f"ALTER TABLE layouts ADD COLUMN {col} {col_type}"))
             except Exception:
                 pass  # Column already exists
+        try:
+            conn.execute(text("ALTER TABLE layout_assignments ADD COLUMN assignment_type VARCHAR(20) NOT NULL DEFAULT 'redirect'"))
+        except Exception:
+            pass
 
 
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):

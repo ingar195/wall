@@ -266,6 +266,27 @@ function applyWindowDisplayCss(win) {
       scrollbar-width: none !important;
     }
 
+    /* Zone URL points straight at a video/image file: Chromium shows it tiny; fill the zone. */
+    body > video:only-child, body > img:only-child {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: none !important;
+      max-height: none !important;
+      margin: 0 !important;
+      object-fit: contain !important;
+    }
+
+    video::-webkit-media-controls,
+    video::-webkit-media-controls-enclosure,
+    video::-webkit-media-controls-panel,
+    video::-webkit-media-controls-overlay-play-button {
+      display: none !important;
+      -webkit-appearance: none !important;
+    }
+    video { cursor: none !important; }
+
     ::-webkit-scrollbar {
       width: 0 !important;
       height: 0 !important;
@@ -276,6 +297,13 @@ function applyWindowDisplayCss(win) {
   const inject = () => {
     win.webContents.insertCSS(css).catch(() => {});
     win.setBackgroundColor("#000000");
+    // Zone URL is a bare video file: loop it forever (signage), keep it playing.
+    win.webContents
+      .executeJavaScript(
+        `(() => { const v = document.querySelector('body > video:only-child');` +
+        ` if (v) { v.loop = true; v.controls = false; v.play().catch(() => {}); } })()`
+      )
+      .catch(() => {});
     applyContentShift(win);
   };
 
@@ -553,14 +581,14 @@ async function captureLoop() {
       const started = Date.now();
       try {
         const displays = sortedDisplays();
-        const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 960, height: 540 } });
+        const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1280, height: 720 } });
         for (let i = 0; i < displays.length; i++) {
           const src = sources.find((s) => s.display_id === String(displays[i].id)) || sources[i];
           if (!src) continue;
           await net.fetch(`${API_URL}/screenshot/${i}`, {
             method: "POST",
             headers: { "Content-Type": "image/jpeg" },
-            body: src.thumbnail.toJPEG(60),
+            body: src.thumbnail.toJPEG(75),
           });
         }
       } catch (err) {
@@ -594,6 +622,22 @@ function runXdotool(...args) {
  * ponytail: no OS-level fallback on Windows; add SendInput via PowerShell if needed.
  */
 function injectInput(msg) {
+  if (msg.kind === "key" && msg.key === "Super") {
+    // OS-level Windows/Super key (Start menu etc.) — never meaningful inside a web page.
+    // Our zone windows sit at "screen-saver" level and would hide the Start menu, so
+    // drop them to normal level for a while, then restore.
+    const wallWins = [...zoneWindows.values(), backgroundWindow].filter((w) => w && !w.isDestroyed());
+    wallWins.forEach((w) => w.setAlwaysOnTop(false));
+    setTimeout(() => wallWins.forEach((w) => !w.isDestroyed() && w.setAlwaysOnTop(true, w === backgroundWindow ? "normal" : "screen-saver")), 15_000);
+    if (process.platform === "win32") {
+      execFile("powershell", ["-NoProfile", "-Command",
+        "Add-Type -Name K -Namespace W -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte k,byte s,int f,int e);';" +
+        "[W.K]::keybd_event(0x5B,0,0,0);[W.K]::keybd_event(0x5B,0,2,0)"]);
+    } else {
+      runXdotool("key", "super");
+    }
+    return;
+  }
   const d = sortedDisplays()[msg.display];
   if (!d) return;
   const gx = Math.round(d.bounds.x + msg.x * d.bounds.width);
