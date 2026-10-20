@@ -94,3 +94,14 @@ def test_fullscreen_watch_requests_native_resolution_for_that_display(admin):
         assert ws.receive_json() == {"action": "capture", "ms": 400, "full": True, "display": 1}
         c.post("/admin/wall/watch", json={"devices": ["d1"], "control": "d1", "display": 1}, headers=h)
         assert ws.receive_json() == {"action": "capture", "ms": 400}  # not fullscreen -> normal quality
+
+
+def test_all_displays_tile_is_valid_and_requests_native_for_all(admin):
+    from app.wall import validate_config
+
+    cfg = {"columns": 1, "rows": 1, "tiles": [{"device": "d1", "display": -1}]}
+    assert validate_config(cfg)["tiles"][0]["display"] == -1  # -1 = every screen of the device
+    c, h = admin
+    with c.websocket_connect("/ws/device/d1", headers={"host": "localhost"}) as ws:
+        c.post("/admin/wall/watch", json={"devices": ["d1"], "control": "d1", "display": -1, "full": True}, headers=h)
+        assert ws.receive_json() == {"action": "capture", "ms": 400, "full": True, "display": -1}

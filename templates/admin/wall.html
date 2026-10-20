@@ -8,8 +8,10 @@
     .wall-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
     .wall-bar select, .wall-bar input, .wall-bar button, .wall-bar a { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: var(--panel-strong); color: var(--text); text-decoration: none; cursor: pointer; }
     .wall-grid { display: grid; gap: 6px; }
-    .wall-tile { position: relative; background: #000; border: 2px solid var(--panel-border); border-radius: 6px; overflow: hidden; }
+    .wall-tile { width: 100%; position: relative; background: #000; border: 2px solid var(--panel-border); border-radius: 6px; overflow: hidden; }
     .wall-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; user-select: none; -webkit-user-drag: none; }
+    .wall-tile .box { position: absolute; inset: 0; display: flex; }
+    .wall-tile .box img { position: static; width: auto; height: 100%; min-width: 0; flex: 1 1 0; }
     .wall-tile .lbl { position: absolute; left: 6px; top: 4px; font-size: 12px; padding: 1px 6px; border-radius: 6px; background: rgba(0,0,0,.65); pointer-events: none; }
     .wall-tile.offline { opacity: .45; }
     .wall-tile.selected { border-color: var(--accent); cursor: crosshair; }
@@ -86,10 +88,9 @@
             el.style.gridColumn = `${t.x + 1} / span ${t.w}`;
             el.style.gridRow = `${t.y + 1} / span ${t.h}`;
             el.style.aspectRatio = `${16 * t.w} / ${9 * t.h}`;
-            el.innerHTML = `<img alt=""><span class="lbl"></span>`;
-            el.querySelector(".lbl").textContent = t.label || `${t.device} #${t.display + 1}`;
-            const tile = { el, img: el.querySelector("img"), cfg: t, ts: 0 };
-            tile.img.onload = () => { tile.size = `${tile.img.naturalWidth}x${tile.img.naturalHeight}`; if (selected === tile) $("ctlName").textContent = label(tile); };
+            el.innerHTML = `<div class="box"></div><span class="lbl"></span>`;
+            el.querySelector(".lbl").textContent = t.label || `${t.device} ${t.display < 0 ? "(all screens)" : "#" + (t.display + 1)}`;
+            const tile = { el, box: el.querySelector(".box"), imgs: new Map(), ts: new Map(), cfg: t };
             el.addEventListener("click", (e) => onTileClick(tile, e, "left"));
             el.addEventListener("contextmenu", (e) => { e.preventDefault(); onTileClick(tile, e, "right"); });
             el.addEventListener("wheel", (e) => { if (selected === tile) { e.preventDefault(); sendInput(tile, { kind: "scroll", dy: Math.round(e.deltaY) }); } }, { passive: false });
@@ -97,9 +98,32 @@
         }
     }
 
+    // One <img> per screen of the tile (cfg.display -1 = every screen of the device, side by side).
+    function ensureImg(tile, display) {
+        let img = tile.imgs.get(display);
+        if (img) return img;
+        img = document.createElement("img");
+        img.alt = ""; img.dataset.display = display;
+        img.onload = () => {
+            const ratio = img.naturalWidth / img.naturalHeight;
+            img.style.flex = `${ratio} 1 0`;  // wider screens get proportionally more room
+            tile.sizes = tile.sizes || {};
+            tile.sizes[display] = `${img.naturalWidth}x${img.naturalHeight}`;
+            tile.size = Object.values(tile.sizes).join(" + ");
+            if (tile.cfg.display < 0) {  // tile as wide as all screens together
+                const total = [...tile.imgs.values()].reduce((s, i) => s + (i.naturalWidth / i.naturalHeight || 16 / 9), 0);
+                tile.el.style.aspectRatio = `${total * tile.cfg.w} / ${tile.cfg.h}`;
+            }
+            if (selected === tile) $("ctlName").textContent = label(tile);
+        };
+        tile.imgs.set(display, img);
+        tile.box.append(...[...tile.imgs.entries()].sort((a, b) => a[0] - b[0]).map(([, i]) => i));
+        return img;
+    }
+
     // Map a click on a letterboxed (object-fit: contain) image to 0..1 screen coordinates.
-    function normCoords(tile, e) {
-        const img = tile.img, r = img.getBoundingClientRect();
+    function normCoords(img, e) {
+        const r = img.getBoundingClientRect();
         const iw = img.naturalWidth || 16, ih = img.naturalHeight || 9;
         const scale = Math.min(r.width / iw, r.height / ih);
         const w = iw * scale, h = ih * scale;
@@ -110,7 +134,7 @@
     // One request at a time so fast typing can't arrive out of order.
     let inputQueue = Promise.resolve();
     function sendInput(tile, extra) {
-        inputQueue = inputQueue.then(() => post("/admin/wall/input", { device: tile.cfg.device, display: tile.cfg.display, ...extra }))
+        inputQueue = inputQueue.then(() => post("/admin/wall/input", { device: tile.cfg.device, display: Math.max(0, tile.cfg.display), ...extra }))
             .then((r) => { if (!r.delivered) $("status").textContent = "Device offline"; else { pollSoon(300); setTimeout(() => pollSoon(0), 900); } })
             .catch((err) => { $("status").textContent = err.message; });
     }
@@ -131,7 +155,10 @@
             if (!document.fullscreenElement) $("stage").requestFullscreen().catch(() => {});
             return;
         }
-        sendInput(tile, { kind: "click", button, ...normCoords(tile, e) });
+        // which screen of the tile was hit (matters for display -1 tiles)
+        const img = e.target.tagName === "IMG" ? e.target : tile.imgs.values().next().value;
+        if (!img) return;
+        sendInput(tile, { kind: "click", button, display: Number(img.dataset.display), ...normCoords(img, e) });
     }
 
     // Fullscreen the controlled tile; the browser itself exits on Esc (that Esc is not forwarded).
@@ -164,9 +191,16 @@
             const state = await post("/admin/wall/watch", { devices: ids, control: selected && selected.cfg.device, display: selected ? selected.cfg.display : 0, full: !!document.fullscreenElement });
             for (const tile of tiles) {
                 const d = state[tile.cfg.device];
-                const ts = d && d.shots[tile.cfg.display];
                 tile.el.classList.toggle("offline", !d || !d.online);
-                if (ts && ts !== tile.ts) { tile.ts = ts; tile.img.src = `/admin/wall/shot/${encodeURIComponent(tile.cfg.device)}/${tile.cfg.display}?t=${ts}`; }
+                if (!d) continue;
+                const wanted = tile.cfg.display < 0 ? Object.keys(d.shots).map(Number) : [tile.cfg.display];
+                for (const display of wanted) {
+                    const ts = d.shots[display];
+                    if (ts && ts !== tile.ts.get(display)) {
+                        tile.ts.set(display, ts);
+                        ensureImg(tile, display).src = `/admin/wall/shot/${encodeURIComponent(tile.cfg.device)}/${display}?t=${ts}`;
+                    }
+                }
             }
             $("status").textContent = "";
         } catch (err) { $("status").textContent = err.message; }
