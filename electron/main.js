@@ -613,13 +613,18 @@ async function captureLoop() {
       try {
         const displays = sortedDisplays();
         // Fullscreen viewing: native pixels of that one display (only it is uploaded); otherwise 720p of all.
-        const full = captureFull !== null && displays[captureFull] ? displays[captureFull] : null;
+        // captureFull: display index, -1 = all displays at native size, null = normal 720p of all.
+        const fullSet = captureFull === -1 ? displays : captureFull !== null && displays[captureFull] ? [displays[captureFull]] : null;
+        const full = fullSet !== null;
         const thumbnailSize = full
-          ? { width: Math.round(full.bounds.width * full.scaleFactor), height: Math.round(full.bounds.height * full.scaleFactor) }
+          ? {
+              width: Math.max(...fullSet.map((d) => Math.round(d.bounds.width * d.scaleFactor))),
+              height: Math.max(...fullSet.map((d) => Math.round(d.bounds.height * d.scaleFactor))),
+            }
           : { width: 1280, height: 720 };
         const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
         for (let i = 0; i < displays.length; i++) {
-          if (full && i !== captureFull) continue;
+          if (full && !fullSet.includes(displays[i])) continue;
           let src = sources.find((s) => s.display_id === String(displays[i].id));
           if (!src) {
             // ponytail: some X11 setups report no display_id; index order may not match left→right order
@@ -653,6 +658,38 @@ function onCaptureLease(ms, fullDisplay) {
   captureFull = Number.isInteger(fullDisplay) ? fullDisplay : null;
   captureUntil = Date.now() + 15_000;
   captureLoop();
+}
+
+/**
+ * OS-level input on Windows (clicks/scroll/text/keys outside our zone windows, e.g. a native dialog).
+ * One short PowerShell per input (~200-400 ms start-up). ponytail: batch/persistent helper if that lag matters.
+ */
+function runWindowsInput(msg, px, py) {
+  const psq = (s) => String(s).replace(/'/g, "''");
+  const head =
+    "Add-Type -AssemblyName System.Windows.Forms;" +
+    "Add-Type -Name M -Namespace W -MemberDefinition '" +
+    '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' +
+    '[DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);' +
+    '[DllImport("user32.dll")] public static extern void mouse_event(int f,int dx,int dy,int d,int e);' +
+    "';[void][W.M]::SetProcessDPIAware();";
+  let body = "";
+  if (msg.kind === "click") {
+    const [down, up] = msg.button === "right" ? [8, 16] : [2, 4];
+    body = `[void][W.M]::SetCursorPos(${px},${py});[W.M]::mouse_event(${down},0,0,0,0);[W.M]::mouse_event(${up},0,0,0,0)`;
+  } else if (msg.kind === "scroll") {
+    body = `[void][W.M]::SetCursorPos(${px},${py});[W.M]::mouse_event(2048,0,0,${Math.round(-msg.dy)},0)`;
+  } else if (msg.kind === "text") {
+    const escaped = msg.text.replace(/[+^%~(){}[\]]/g, "{$&}");
+    body = `[System.Windows.Forms.SendKeys]::SendWait('${psq(escaped)}')`;
+  } else if (msg.kind === "key") {
+    const map = { Enter: "{ENTER}", Escape: "{ESC}", Tab: "{TAB}", Backspace: "{BS}", Up: "{UP}", Down: "{DOWN}", Left: "{LEFT}", Right: "{RIGHT}", Delete: "{DEL}" };
+    if (!map[msg.key]) return;
+    body = `[System.Windows.Forms.SendKeys]::SendWait('${map[msg.key]}')`;
+  } else {
+    return;
+  }
+  execFile("powershell", ["-NoProfile", "-Command", head + body], (err) => err && console.error("[WALL] win input:", err.message));
 }
 
 let lastInputWin = null; // zone window that received the last click; keys/text go there
@@ -729,6 +766,10 @@ function injectInput(msg) {
   }
 
   const px = Math.round(gx * d.scaleFactor), py = Math.round(gy * d.scaleFactor);
+  if (process.platform === "win32") {
+    runWindowsInput(msg, px, py);
+    return;
+  }
   if (msg.kind === "click") {
     runXdotool("mousemove", String(px), String(py), "click", msg.button === "right" ? "3" : "1");
   } else if (msg.kind === "scroll") {

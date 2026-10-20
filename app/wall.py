@@ -136,7 +136,7 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
         data = await request.json()
         control = data.get("control")  # the device being remote-controlled captures faster
         full = bool(data.get("full"))  # viewer is fullscreen: ask for native resolution of that display
-        control_display = max(0, min(MAX_DISPLAYS - 1, int(data.get("display", 0))))
+        control_display = max(-1, min(MAX_DISPLAYS - 1, int(data.get("display", 0))))  # -1 = all displays
         out = {}
         for device_id in {str(d) for d in data.get("devices", [])}:
             device = db.get(Device, device_id)
