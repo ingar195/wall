@@ -4,6 +4,7 @@ import logging
 import json
 import re
 import secrets
+import time
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
@@ -25,6 +26,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import settings
 from app.database import Base, engine, get_db
+from app.device_auth import authenticate_device
 from app.models import AuditLog, ContentSource, Device, Layout
 from app.services import (
     add_audit_log,
@@ -46,6 +48,7 @@ from app.services import (
     update_device,
     update_layout,
 )
+from app.wall import make_wall_router
 from app.websocket_hub import manager
 
 
@@ -79,19 +82,28 @@ def initialize_database_schema() -> None:
 
 
 def _migrate_add_schedule_columns() -> None:
-    from sqlalchemy import text
-    migrations = [
-        ("schedule_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
-        ("schedule_start", "VARCHAR(5)"),
-        ("schedule_end", "VARCHAR(5)"),
-        ("schedule_days", "JSON"),
-    ]
+    """Add columns introduced after first release to existing databases."""
+    from sqlalchemy import inspect, text
+    migrations = {
+        "layouts": [
+            ("schedule_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("schedule_start", "VARCHAR(5)"),
+            ("schedule_end", "VARCHAR(5)"),
+            ("schedule_days", "JSON"),
+        ],
+        "layout_assignments": [("assignment_type", "VARCHAR(20) NOT NULL DEFAULT 'redirect'")],
+        "devices": [("secret_hash", "VARCHAR(64)")],
+    }
+    inspector = inspect(engine)
     with engine.begin() as conn:
-        for col, col_type in migrations:
-            try:
-                conn.execute(text(f"ALTER TABLE layouts ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass  # Column already exists
+        for table, columns in migrations.items():
+            if table not in inspector.get_table_names():
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            for col, col_type in columns:
+                if col not in existing:
+                    logger.info("Migrating: adding %s.%s", table, col)
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
 
 
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
@@ -171,6 +183,42 @@ def require_csrf(request: Request, submitted_token: str) -> None:
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
+def require_csrf_header(request: Request) -> None:
+    require_csrf(request, request.headers.get("x-csrf-token", ""))
+
+
+# ponytail: per-process, per-IP (behind a proxy this is the proxy's IP unless TRUSTED_PROXY_IPS is set)
+LOGIN_MAX_FAILS, LOGIN_WINDOW_S = 5, 300
+_login_fails: dict[str, list[float]] = {}
+
+
+def login_is_locked(ip: str) -> bool:
+    now = time.time()
+    fails = [t for t in _login_fails.get(ip, []) if now - t < LOGIN_WINDOW_S]
+    _login_fails[ip] = fails
+    return len(fails) >= LOGIN_MAX_FAILS
+
+
+def login_failed(ip: str) -> None:
+    _login_fails.setdefault(ip, []).append(time.time())
+
+
+def login_ok(ip: str) -> None:
+    _login_fails.pop(ip, None)
+
+
+def require_device(db: Session, headers, device_id: str, create: bool = False) -> None:
+    if not authenticate_device(db, device_id, headers.get("x-device-secret", ""), create=create):
+        raise HTTPException(status_code=401, detail="Invalid device credentials")
+
+
+def proxy_allowed(session: dict, headers, db: Session) -> bool:
+    """/proxy injects source tokens: allow the admin session or an authenticated device (X-Device-Id + secret)."""
+    if session.get("admin_authenticated"):
+        return True
+    return authenticate_device(db, headers.get("x-device-id", ""), headers.get("x-device-secret", ""))
+
+
 def is_admin_authenticated(request: Request) -> bool:
     return bool(request.scope.get("session", {}).get("admin_authenticated"))
 
@@ -220,6 +268,9 @@ def render_devices_panel(request: Request, db: Session) -> HTMLResponse:
     )
 
 
+app.include_router(make_wall_router(require_admin, require_csrf_header, get_or_create_csrf_token, templates))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root() -> RedirectResponse:
     return redirect("/admin")
@@ -239,8 +290,13 @@ async def admin_login_page(request: Request) -> Response:
 @app.post("/admin/login")
 async def admin_login(request: Request, password: str = Form(...), csrf_token: str = Form(...)) -> RedirectResponse:
     require_csrf(request, csrf_token)
-    if password != settings.admin_password:
+    ip = request.client.host if request.client else ""
+    if login_is_locked(ip):
+        raise HTTPException(status_code=429, detail="Too many failed logins, try again later")
+    if not secrets.compare_digest(password.encode(), settings.admin_password.encode()):
+        login_failed(ip)
         return redirect("/admin/login?error=1")
+    login_ok(ip)
     request.session["admin_authenticated"] = True
     request.session["admin_actor"] = "admin"
     return redirect("/admin")
@@ -346,15 +402,18 @@ async def admin_create_layout(
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
-    layout = create_layout(
-        db,
-        name=name,
-        grid_configuration=grid_configuration,
-        schedule_enabled=schedule_enabled,
-        schedule_start=schedule_start or None,
-        schedule_end=schedule_end or None,
-        schedule_days=schedule_days or None,
-    )
+    try:
+        layout = create_layout(
+            db,
+            name=name,
+            grid_configuration=grid_configuration,
+            schedule_enabled=schedule_enabled,
+            schedule_start=schedule_start or None,
+            schedule_end=schedule_end or None,
+            schedule_days=schedule_days or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(request, db, "layout.create", f"Created layout {layout.name} ({layout.id})")
     return redirect("/admin")
 
@@ -377,16 +436,19 @@ async def admin_update_layout(
     layout = db.get(Layout, layout_id)
     if not layout:
         raise HTTPException(status_code=404, detail="Unknown layout")
-    update_layout(
-        db,
-        layout,
-        name=name,
-        grid_configuration=grid_configuration,
-        schedule_enabled=schedule_enabled,
-        schedule_start=schedule_start or None,
-        schedule_end=schedule_end or None,
-        schedule_days=schedule_days or None,
-    )
+    try:
+        update_layout(
+            db,
+            layout,
+            name=name,
+            grid_configuration=grid_configuration,
+            schedule_enabled=schedule_enabled,
+            schedule_start=schedule_start or None,
+            schedule_end=schedule_end or None,
+            schedule_days=schedule_days or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(request, db, "layout.update", f"Updated layout {layout.name} ({layout.id})")
     assigned_devices = db.scalars(select(Device).where(Device.current_layout_id == layout.id)).all()
     for device in assigned_devices:
@@ -457,7 +519,10 @@ async def admin_pair_device(
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
-    device = pair_device(db, pairing_code=pairing_code, name=device_name, layout_id=layout_id)
+    try:
+        device = pair_device(db, pairing_code=pairing_code, name=device_name, layout_id=layout_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(request, db, "device.pair", f"Paired device {device.name} ({device.id})")
     await manager.send(device.id, {"action": "new_layout"})
     return redirect("/admin")
@@ -500,6 +565,26 @@ async def admin_delete_device(
     return redirect("/admin")
 
 
+@app.post("/admin/devices/{device_id}/reset-secret")
+async def admin_reset_device_secret(
+    request: Request,
+    device_id: str,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Forget the device's secret; the next client to connect adopts its own (e.g. after reinstalling the client)."""
+    require_admin(request)
+    require_csrf(request, csrf_token)
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Unknown device")
+    device.secret_hash = None
+    db.add(device)
+    db.commit()
+    audit(request, db, "device.reset_secret", f"Reset secret for device {device.name} ({device.id})")
+    return redirect("/admin")
+
+
 @app.post("/admin/devices/{device_id}/refresh")
 async def admin_refresh_device(
     request: Request,
@@ -522,6 +607,7 @@ async def admin_refresh_device(
 @app.get("/api/device/{device_id}")
 async def api_device_layout(device_id: str, request: Request, db: Session = Depends(get_db)) -> dict:
     """JSON endpoint consumed by the Electron display client."""
+    require_device(db, request.headers, device_id, create=True)
     device = get_or_create_device(db, device_id)
     if not device.current_layout_id:
         device = ensure_pairing_code(db, device)
@@ -574,6 +660,7 @@ async def api_device_layout(device_id: str, request: Request, db: Session = Depe
 
 @app.get("/display/{device_id}", response_model=None)
 async def display_device(request: Request, device_id: str, db: Session = Depends(get_db)) -> Response:
+    require_device(db, request.headers, device_id, create=True)
     device = get_or_create_device(db, device_id)
     if not device.current_layout_id:
         device = ensure_pairing_code(db, device)
@@ -588,16 +675,22 @@ async def display_device(request: Request, device_id: str, db: Session = Depends
     if not layout:
         raise HTTPException(status_code=500, detail="Assigned layout not found")
     zones = get_layout_zone_views(db, layout)
-    
-    # Check if this layout has a single redirect zone - if so, redirect immediately
     redirect_zones = [z for z in zones if z.redirect_url]
     if redirect_zones:
-        # Redirect to the first redirect zone's URL
         return redirect(redirect_zones[0].redirect_url)
+    # Paired but no content assigned yet — show a neutral waiting screen
+    return templates.TemplateResponse(
+        request,
+        "display/pairing.html",
+        {"device": device},
+    )
 
 
 @app.websocket("/ws/device/{device_id}")
 async def device_socket(websocket: WebSocket, device_id: str, db: Session = Depends(get_db)) -> None:
+    if not authenticate_device(db, device_id, websocket.headers.get("x-device-secret", ""), create=True):
+        await websocket.close(code=1008)
+        return
     await manager.connect(device_id, websocket)
     mark_device_seen(db, device_id)
     try:
@@ -616,6 +709,9 @@ async def device_socket(websocket: WebSocket, device_id: str, db: Session = Depe
 
 @app.websocket("/proxy/{target_app_id}/{path:path}")
 async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, db: Session = Depends(get_db)) -> None:
+    if not proxy_allowed(websocket.scope.get("session", {}), websocket.headers, db):
+        await websocket.close(code=1008)
+        return
     try:
         source, token = get_source_token(db, target_app_id)
     except ValueError:
@@ -634,7 +730,7 @@ async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, d
     try:
         async with websockets.connect(
             upstream_url,
-            extra_headers=({"Authorization": f"Bearer {token}"} if token.strip() and not is_public_status_source else None),
+            additional_headers=({"Authorization": f"Bearer {token}"} if token.strip() and not is_public_status_source else None),
             open_timeout=10,
         ) as upstream:
             async def client_to_upstream() -> None:
@@ -655,14 +751,14 @@ async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, d
                     pass
 
             tasks = [
-                asyncio.ensure_future(client_to_upstream()),
-                asyncio.ensure_future(upstream_to_client()),
+                asyncio.create_task(client_to_upstream()),
+                asyncio.create_task(upstream_to_client()),
             ]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
     except Exception:
-        pass
+        logger.exception("WebSocket proxy to %s failed", upstream_url)
     finally:
         try:
             await websocket.close()
@@ -672,6 +768,8 @@ async def proxy_websocket(target_app_id: int, path: str, websocket: WebSocket, d
 
 @app.api_route("/proxy/{target_app_id}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 async def proxy_request(target_app_id: int, path: str, request: Request, db: Session = Depends(get_db)) -> Response:
+    if not proxy_allowed(request.scope.get("session", {}), request.headers, db):
+        raise HTTPException(status_code=401, detail="Proxy requires admin login or device credentials")
     try:
         source, token = get_source_token(db, target_app_id)
     except ValueError as exc:
@@ -694,7 +792,7 @@ async def proxy_request(target_app_id: int, path: str, request: Request, db: Ses
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length"}
+        if key.lower() not in {"host", "content-length", "x-device-id", "x-device-secret"}
     }
     if token.strip() and not is_public_status_source:
         headers["authorization"] = f"Bearer {token}"

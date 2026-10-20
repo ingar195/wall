@@ -33,6 +33,8 @@ class Settings:
     db_path: str = os.getenv("DB_PATH", "sqlite:///./display_manager.db")
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
+    # Require a per-device secret on device/proxy endpoints. Set DEVICE_AUTH=off only for legacy browser kiosks.
+    device_auth: bool = os.getenv("DEVICE_AUTH", "on").strip().lower() not in {"off", "0", "false", "no"}
     admin_password: str = os.getenv("ADMIN_PASSWORD", "change-me")
     session_secret: str = os.getenv("SESSION_SECRET", os.getenv("ENCRYPTION_KEY", "dev-session-secret"))
     trusted_hosts: list[str] = field(default_factory=lambda: csv_env("TRUSTED_HOSTS", "localhost,127.0.0.1"))

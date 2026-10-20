@@ -45,6 +45,7 @@ class Device(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="offline")
     current_layout_id: Mapped[int | None] = mapped_column(ForeignKey("layouts.id"), nullable=True)
     last_ping: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pairing_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     pairing_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
@@ -64,6 +65,20 @@ class LayoutAssignment(Base):
 
     layout: Mapped[Layout] = relationship()
     source: Mapped[ContentSource] = relationship()
+
+
+class WallLayout(Base):
+    """Admin 'wall view' arrangement: which device display shows in which tile.
+
+    config = {"columns": int, "rows": int,
+              "tiles": [{"device": str, "display": int, "x": int, "y": int, "w": int, "h": int, "label": str}]}
+    """
+
+    __tablename__ = "wall_layouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class AuditLog(Base):

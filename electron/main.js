@@ -21,11 +21,11 @@
  *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
-const { app, BrowserWindow, globalShortcut, screen } = require("electron");
+const { app, BrowserWindow, desktopCapturer, globalShortcut, net, screen, session } = require("electron");
+const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-const http = require("http");
-const https = require("https");
+const WebSocket = require("ws");
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -116,6 +116,28 @@ function getDeviceId() {
 }
 
 const DEVICE_ID = getDeviceId();
+
+/**
+ * Per-device secret (trust-on-first-use on the server): sent with every request so knowing the
+ * device id alone is not enough to impersonate this screen. Generated once, kept in userData.
+ * Override with WALL_SECRET / config "secret". Admin can "Reset secret" if it is ever lost.
+ */
+function getDeviceSecret() {
+  const fromEnv = process.env.WALL_SECRET || _cfg.secret;
+  if (fromEnv) return String(fromEnv);
+  const secretPath = path.join(app.getPath("userData"), "device_secret.txt");
+  try {
+    const saved = fs.readFileSync(secretPath, "utf8").trim();
+    if (saved) return saved;
+  } catch (_) {}
+  const secret = require("crypto").randomBytes(32).toString("hex");
+  fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+  fs.writeFileSync(secretPath, secret, { encoding: "utf8", mode: 0o600 });
+  return secret;
+}
+
+const DEVICE_SECRET = getDeviceSecret();
+const AUTH_HEADERS = { "X-Device-Id": DEVICE_ID, "X-Device-Secret": DEVICE_SECRET };
 const API_URL = `${SERVER_BASE}/api/device/${encodeURIComponent(DEVICE_ID)}`;
 const WS_URL = SERVER_BASE.replace(/^http/, "ws") + `/ws/device/${encodeURIComponent(DEVICE_ID)}`;
 const PIXEL_SHIFT_PX = 20;
@@ -128,34 +150,51 @@ const PIXEL_SHIFT_STEPS = [
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
+let isQuitting = false;
 /** @type {Map<string, BrowserWindow>} */
 let zoneWindows = new Map();
-/** @type {Map<string, {x:number,y:number,width:number,height:number}>} */
-let zoneBaseBounds = new Map();
 let backgroundWindow = null;
 let pairingWindow = null;
 let wsClient = null;
 let pollTimer = null;
 let pixelShiftTimer = null;
 let pixelShiftStepIndex = 0;
+let lastLayoutData = null;
+let displaySettleTimer = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fetchJSON(url) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith("https") ? https : http;
-    mod.get(url, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(new Error(`JSON parse error: ${e.message}`));
-        }
-      });
-    }).on("error", reject);
-  });
+// Use Electron's Chromium-backed net.fetch so requests share the same TLS
+// fingerprint and User-Agent as the BrowserWindow content.  Node's http module
+// presents a different JA3 fingerprint that Cloudflare and other WAFs can block.
+async function fetchJSON(url) {
+  let res;
+  try {
+    res = await net.fetch(url, { headers: AUTH_HEADERS });
+  } catch (err) {
+    throw new Error(`Network error: ${err.message}`);
+  }
+
+  if (res.status === 403) {
+    throw new Error(
+      `HTTP 403 Forbidden — server or reverse proxy rejected the request. ` +
+      `Check TRUSTED_HOSTS on the server and any WAF/Cloudflare rules.`
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} from server`);
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const preview = (await res.text()).slice(0, 120);
+    throw new Error(
+      `Server returned ${contentType || "unknown content-type"} instead of JSON. ` +
+      `Is the server URL correct? Got: ${preview}`
+    );
+  }
+
+  return res.json();
 }
 
 /**
@@ -175,17 +214,41 @@ function gridToPixelBounds(zone, columns, rows, displayBounds) {
   };
 }
 
-function insetDisplayBounds(displayBounds, insetPx) {
-  const maxInsetX = Math.max(0, Math.floor((displayBounds.width - 100) / 2));
-  const maxInsetY = Math.max(0, Math.floor((displayBounds.height - 100) / 2));
-  const appliedInsetX = Math.min(insetPx, maxInsetX);
-  const appliedInsetY = Math.min(insetPx, maxInsetY);
-  return {
-    x: displayBounds.x + appliedInsetX,
-    y: displayBounds.y + appliedInsetY,
-    width: Math.max(100, displayBounds.width - appliedInsetX * 2),
-    height: Math.max(100, displayBounds.height - appliedInsetY * 2),
-  };
+/**
+ * Log the raw display list and flag overlapping bounds. Overlapping bounds
+ * almost always mean the X11/Wayland session has the outputs in
+ * mirror/clone mode rather than side-by-side extend mode — in that case the
+ * union math in getTargetDisplayBounds() produces a canvas that doesn't
+ * match physical reality, and zones meant for the "second" monitor end up
+ * positioned on top of the first monitor's content instead of beside it.
+ */
+function logDisplayDiagnostics() {
+  const displays = screen.getAllDisplays();
+  const primaryId = screen.getPrimaryDisplay().id;
+  console.log(`[WALL] Detected ${displays.length} display(s):`);
+  for (const d of displays) {
+    console.log(
+      `  id=${d.id}${d.id === primaryId ? " (primary)" : ""} ` +
+      `bounds=${JSON.stringify(d.bounds)} scaleFactor=${d.scaleFactor} rotation=${d.rotation}`
+    );
+  }
+  for (let i = 0; i < displays.length; i++) {
+    for (let j = i + 1; j < displays.length; j++) {
+      const a = displays[i].bounds;
+      const b = displays[j].bounds;
+      const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+      const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+      if (overlapX > 0 && overlapY > 0) {
+        console.warn(
+          `[WALL] WARNING: displays ${displays[i].id} and ${displays[j].id} overlap by ${overlapX}x${overlapY}px. ` +
+          `This usually means the outputs are in mirror/clone mode instead of side-by-side extend mode. ` +
+          `Run 'xrandr --query' (X11) or 'wlr-randr' (Wayland) on the Pi to see output names, then set them ` +
+          `to extend, e.g.: xrandr --output HDMI-2 --right-of HDMI-1 --auto. ` +
+          `Zones will overlap/misplace until the outputs are arranged side by side.`
+        );
+      }
+    }
+  }
 }
 
 function getTargetDisplayBounds() {
@@ -225,6 +288,27 @@ function applyWindowDisplayCss(win) {
       scrollbar-width: none !important;
     }
 
+    /* Zone URL points straight at a video/image file: Chromium shows it tiny; fill the zone. */
+    body > video:only-child, body > img:only-child {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: none !important;
+      max-height: none !important;
+      margin: 0 !important;
+      object-fit: contain !important;
+    }
+
+    video::-webkit-media-controls,
+    video::-webkit-media-controls-enclosure,
+    video::-webkit-media-controls-panel,
+    video::-webkit-media-controls-overlay-play-button {
+      display: none !important;
+      -webkit-appearance: none !important;
+    }
+    video { cursor: none !important; }
+
     ::-webkit-scrollbar {
       width: 0 !important;
       height: 0 !important;
@@ -235,10 +319,41 @@ function applyWindowDisplayCss(win) {
   const inject = () => {
     win.webContents.insertCSS(css).catch(() => {});
     win.setBackgroundColor("#000000");
+    // Zone URL is a bare video file: loop it forever (signage), keep it playing.
+    win.webContents
+      .executeJavaScript(
+        `(() => { const v = document.querySelector('body > video:only-child');` +
+        ` if (v) { v.loop = true; v.controls = false; v.play().catch(() => {}); } })()`
+      )
+      .catch(() => {});
+    applyContentShift(win);
   };
 
   win.webContents.on("did-finish-load", inject);
+  // dom-ready fires before did-finish-load and ensures CSS is applied even
+  // for pages that never fully load (e.g. slow content sources).
   win.webContents.on("dom-ready", inject);
+}
+
+/**
+ * Shift the rendered page content with a CSS transform instead of moving the
+ * native OS window. Moving the window itself (via setBounds) caused ghosting
+ * on Linux setups without a compositor (e.g. Raspberry Pi OS's default
+ * Openbox session) — the X server has nothing to repaint the area the window
+ * vacated, so old frames stack up visually over time. Transforming the
+ * content inside a window that never moves avoids touching the OS window
+ * manager entirely; Chromium repaints the transform internally regardless of
+ * GPU/compositor availability.
+ */
+function applyContentShift(win) {
+  if (!win || win.isDestroyed()) return;
+  const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
+  win.webContents
+    .executeJavaScript(
+      `document.documentElement.style.setProperty('transition', 'none', 'important');` +
+      `document.documentElement.style.setProperty('transform', 'translate(${step.x}px, ${step.y}px)', 'important');`
+    )
+    .catch(() => {});
 }
 
 function createDisplayWindow(bounds, { kiosk = false } = {}) {
@@ -255,6 +370,11 @@ function createDisplayWindow(bounds, { kiosk = false } = {}) {
     minimizable: false,
     maximizable: false,
     closable: false,
+    // Must stay non-focusable / hidden from the taskbar: on Linux WMs (e.g.
+    // Openbox on Raspberry Pi OS) a "normal" focusable window gets WM-drawn
+    // decorations/shadows, which corrupts the kiosk display — each pixel-shift
+    // reposition then leaves a shadowed ghost behind since there's no
+    // compositor to repaint the vacated area.
     focusable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -290,11 +410,9 @@ function closeZoneWindows() {
     }
   }
   zoneWindows.clear();
-  zoneBaseBounds.clear();
 }
 
 function disposeZoneWindow(zoneId, win) {
-  zoneBaseBounds.delete(zoneId);
   zoneWindows.delete(zoneId);
   if (!win || win.isDestroyed()) {
     return;
@@ -308,7 +426,6 @@ function disposeAllZoneWindows() {
     disposeZoneWindow(zoneId, win);
   }
   zoneWindows.clear();
-  zoneBaseBounds.clear();
 }
 
 function ensureBackgroundWindow() {
@@ -355,18 +472,8 @@ function ensureBackgroundWindow() {
 }
 
 function applyPixelShiftToWindows() {
-  const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
-  for (const [zoneId, win] of zoneWindows.entries()) {
-    if (!win || win.isDestroyed()) continue;
-    const base = zoneBaseBounds.get(zoneId);
-    if (!base) continue;
-    const shifted = {
-      x: base.x + step.x,
-      y: base.y + step.y,
-      width: base.width,
-      height: base.height,
-    };
-    win.setBounds(shifted, false);
+  for (const win of zoneWindows.values()) {
+    applyContentShift(win);
   }
 }
 
@@ -402,11 +509,12 @@ function showPairingScreen() {
 }
 
 function applyLayout(data) {
+  lastLayoutData = data;
   closePairingWindow();
   ensureBackgroundWindow();
 
   const { layout, zones } = data;
-  const displayBounds = insetDisplayBounds(getTargetDisplayBounds(), PIXEL_SHIFT_PX);
+  const displayBounds = getTargetDisplayBounds();
   const nextZones = zones.filter((zone) => zone.url);
   const nextIds = new Set(nextZones.map((zone) => String(zone.id)));
 
@@ -420,7 +528,6 @@ function applyLayout(data) {
     const zoneId = String(zone.id);
 
     const bounds = gridToPixelBounds(zone, layout.columns, layout.rows, displayBounds);
-    zoneBaseBounds.set(zoneId, bounds);
     let win = zoneWindows.get(zoneId);
     if (!win || win.isDestroyed()) {
       win = createDisplayWindow(bounds);
@@ -433,14 +540,10 @@ function applyLayout(data) {
       zoneWindows.set(zoneId, win);
     }
 
-    const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex];
-    const shifted = {
-      x: bounds.x + step.x,
-      y: bounds.y + step.y,
-      width: bounds.width,
-      height: bounds.height,
-    };
-    win.setBounds(shifted, false);
+    // The window itself never moves once placed — only its content shifts
+    // via CSS transform (see applyContentShift) — so bounds only need to be
+    // reapplied here when the grid/display layout actually changes.
+    win.setBounds(bounds, false);
     const currentUrl = win.webContents.getURL();
     if (currentUrl !== zone.url) {
       win.loadURL(zone.url);
@@ -451,12 +554,207 @@ function applyLayout(data) {
   }
 }
 
+/**
+ * Recompute display bounds and reposition whatever is currently on screen.
+ * Linux multi-monitor arrangement (xrandr/wlr-randr) can finish settling
+ * after Electron has already started and taken its first bounds snapshot —
+ * particularly on Raspberry Pi where HDMI outputs are detected asynchronously
+ * at boot. Without this, zones are sized/positioned against a stale display
+ * union and never correct themselves once the real arrangement settles.
+ */
+function recomputeLayoutForCurrentDisplays() {
+  logDisplayDiagnostics();
+  if (pairingWindow && !pairingWindow.isDestroyed()) {
+    const bounds = getTargetDisplayBounds();
+    pairingWindow.setBounds(bounds, false);
+  }
+  if (lastLayoutData) {
+    applyLayout(lastLayoutData);
+  } else if (backgroundWindow && !backgroundWindow.isDestroyed()) {
+    ensureBackgroundWindow();
+  }
+}
+
+function scheduleDisplayRecompute() {
+  // Debounce — display-added/removed/metrics-changed can fire several times
+  // in quick succession while the OS finishes negotiating monitor modes.
+  clearTimeout(displaySettleTimer);
+  displaySettleTimer = setTimeout(recomputeLayoutForCurrentDisplays, 1_000);
+}
+
+// ── Wall view: screenshots + remote input ─────────────────────────────────────
+// The admin wall page sends {action:"capture", ms} every couple of seconds while
+// someone is watching; we capture only while that lease is alive.
+
+let captureMs = 2500;
+let captureUntil = 0;
+let captureRunning = false;
+let captureFallbackWarned = false;
+let wakeCapture = null; // interrupts the capture loop's sleep
+let captureFull = null; // display index being viewed fullscreen -> capture it at native resolution
+
+/** After an input, grab a fresh frame soon so the admin sees the effect (and stops re-clicking). */
+function nudgeCapture() {
+  captureUntil = Math.max(captureUntil, Date.now() + 15_000);
+  setTimeout(() => (wakeCapture ? wakeCapture() : captureLoop()), 150);
+}
+
+/** Stable display order (left→right, top→bottom) so "display 0" means the same screen everywhere. */
+function sortedDisplays() {
+  return screen.getAllDisplays().slice().sort((a, b) => a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y);
+}
+
+async function captureLoop() {
+  if (captureRunning) return;
+  captureRunning = true;
+  try {
+    while (Date.now() < captureUntil && !isQuitting) {
+      const started = Date.now();
+      try {
+        const displays = sortedDisplays();
+        // Fullscreen viewing: native pixels of that one display (only it is uploaded); otherwise 720p of all.
+        const full = captureFull !== null && displays[captureFull] ? displays[captureFull] : null;
+        const thumbnailSize = full
+          ? { width: Math.round(full.bounds.width * full.scaleFactor), height: Math.round(full.bounds.height * full.scaleFactor) }
+          : { width: 1280, height: 720 };
+        const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
+        for (let i = 0; i < displays.length; i++) {
+          if (full && i !== captureFull) continue;
+          let src = sources.find((s) => s.display_id === String(displays[i].id));
+          if (!src) {
+            // ponytail: some X11 setups report no display_id; index order may not match left→right order
+            if (!captureFallbackWarned) { console.warn("[WALL] capture: no display_id match, falling back to source order"); captureFallbackWarned = true; }
+            src = sources[i];
+          }
+          if (!src) continue;
+          await net.fetch(`${API_URL}/screenshot/${i}`, {
+            method: "POST",
+            headers: { ...AUTH_HEADERS, "Content-Type": "image/jpeg" },
+            body: src.thumbnail.toJPEG(full ? 90 : 75),
+          });
+        }
+      } catch (err) {
+        console.error("[WALL] capture failed:", err.message);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      await new Promise((r) => {
+        const t = setTimeout(r, Math.max(50, captureMs - (Date.now() - started)));
+        wakeCapture = () => { clearTimeout(t); r(); };
+      });
+      wakeCapture = null;
+    }
+  } finally {
+    captureRunning = false;
+  }
+}
+
+function onCaptureLease(ms, fullDisplay) {
+  captureMs = Math.min(10_000, Math.max(300, Number(ms) || 2500));
+  captureFull = Number.isInteger(fullDisplay) ? fullDisplay : null;
+  captureUntil = Date.now() + 15_000;
+  captureLoop();
+}
+
+let lastInputWin = null; // zone window that received the last click; keys/text go there
+
+function runXdotool(...args) {
+  if (process.platform !== "linux") return;
+  execFile("xdotool", args, (err) => err && console.error("[WALL] xdotool:", err.message));
+}
+
+/**
+ * Inject a click/scroll/key/text from the admin wall page.
+ * Zone windows get Chromium input events (works in-page, no OS focus needed).
+ * Anything else (e.g. a native popup over the wall) falls back to xdotool on Linux.
+ * ponytail: no OS-level fallback on Windows; add SendInput via PowerShell if needed.
+ */
+function injectInput(msg) {
+  if (msg.kind === "key" && msg.key === "Super") {
+    // OS-level Windows/Super key (Start menu etc.) — never meaningful inside a web page.
+    // Our zone windows sit at "screen-saver" level and would hide the Start menu, so
+    // drop them to normal level for a while, then restore.
+    const wallWins = [...zoneWindows.values(), backgroundWindow].filter((w) => w && !w.isDestroyed());
+    wallWins.forEach((w) => w.setAlwaysOnTop(false));
+    setTimeout(() => wallWins.forEach((w) => !w.isDestroyed() && w.setAlwaysOnTop(true, w === backgroundWindow ? "normal" : "screen-saver")), 15_000);
+    if (process.platform === "win32") {
+      execFile("powershell", ["-NoProfile", "-Command",
+        "Add-Type -Name K -Namespace W -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte k,byte s,int f,int e);';" +
+        "[W.K]::keybd_event(0x5B,0,0,0);[W.K]::keybd_event(0x5B,0,2,0)"]);
+    } else {
+      runXdotool("key", "super");
+    }
+    return;
+  }
+  const d = sortedDisplays()[msg.display];
+  if (!d) return;
+  const gx = Math.round(d.bounds.x + msg.x * d.bounds.width);
+  const gy = Math.round(d.bounds.y + msg.y * d.bounds.height);
+
+  let target = null;
+  if (msg.kind === "click" || msg.kind === "scroll") {
+    target = Array.from(zoneWindows.values()).find((w) => {
+      if (w.isDestroyed()) return false;
+      const b = w.getBounds();
+      return gx >= b.x && gx < b.x + b.width && gy >= b.y && gy < b.y + b.height;
+    }) || null;
+    if (msg.kind === "click") lastInputWin = target;
+  } else {
+    target = lastInputWin && !lastInputWin.isDestroyed() ? lastInputWin : null;
+  }
+
+  if (target) {
+    const wc = target.webContents;
+    const b = target.getBounds();
+    const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex]; // content is CSS-shifted, undo it
+    const lx = gx - b.x - step.x, ly = gy - b.y - step.y;
+    if (msg.kind === "click") {
+      wc.focus(); // without this the first clicks only hover/focus; typed text then goes nowhere
+      wc.sendInputEvent({ type: "mouseMove", x: lx, y: ly });
+      setTimeout(() => {
+        if (wc.isDestroyed()) return;
+        wc.sendInputEvent({ type: "mouseDown", x: lx, y: ly, button: msg.button, clickCount: 1 });
+        setTimeout(() => !wc.isDestroyed() && wc.sendInputEvent({ type: "mouseUp", x: lx, y: ly, button: msg.button, clickCount: 1 }), 40);
+      }, 40);
+    } else if (msg.kind === "scroll") {
+      wc.sendInputEvent({ type: "mouseWheel", x: lx, y: ly, deltaX: 0, deltaY: -msg.dy });
+    } else if (msg.kind === "text") {
+      wc.focus();
+      wc.insertText(msg.text);
+    } else if (msg.kind === "key" && msg.key) {
+      wc.focus();
+      wc.sendInputEvent({ type: "keyDown", keyCode: msg.key });
+      wc.sendInputEvent({ type: "keyUp", keyCode: msg.key });
+    }
+    return;
+  }
+
+  const px = Math.round(gx * d.scaleFactor), py = Math.round(gy * d.scaleFactor);
+  if (msg.kind === "click") {
+    runXdotool("mousemove", String(px), String(py), "click", msg.button === "right" ? "3" : "1");
+  } else if (msg.kind === "scroll") {
+    runXdotool("mousemove", String(px), String(py), "click", msg.dy > 0 ? "5" : "4");
+  } else if (msg.kind === "text") {
+    runXdotool("type", "--delay", "20", "--", msg.text);
+  } else if (msg.kind === "key") {
+    const map = { Enter: "Return", Escape: "Escape", Tab: "Tab", Backspace: "BackSpace", Up: "Up", Down: "Down", Left: "Left", Right: "Right", Delete: "Delete" };
+    if (map[msg.key]) runXdotool("key", map[msg.key]);
+  }
+}
+
 // ── WebSocket connection ──────────────────────────────────────────────────────
 
 function connectWebSocket() {
+  if (isQuitting) return;
   try {
-    const WebSocket = require("ws");
-    wsClient = new WebSocket(WS_URL);
+    // Include Origin and a browser-like User-Agent so the WebSocket upgrade
+    // request passes WAF / Cloudflare bot checks that reject bare Node.js clients.
+    wsClient = new WebSocket(WS_URL, {
+      headers: {
+        ...AUTH_HEADERS,
+        "Origin": SERVER_BASE,
+        "User-Agent": `Mozilla/5.0 (X11; Linux ${process.arch}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36`,
+      },
+    });
 
     wsClient.on("open", () => {
       console.log("[WS] connected");
@@ -474,6 +772,11 @@ function connectWebSocket() {
         if (msg.action === "refresh" || msg.action === "new_layout") {
           console.log("[WS] layout change — reloading");
           loadLayout();
+        } else if (msg.action === "capture") {
+          onCaptureLease(msg.ms, msg.full ? msg.display : null);
+        } else if (msg.action === "input") {
+          injectInput(msg);
+          nudgeCapture();
         } else if (msg.type === "pong") {
           // no-op
         }
@@ -481,17 +784,24 @@ function connectWebSocket() {
     });
 
     wsClient.on("close", () => {
-      console.log("[WS] disconnected — reconnecting in 5 s");
       clearInterval(wsClient._pingInterval);
-      setTimeout(connectWebSocket, 5_000);
+      if (!isQuitting) {
+        console.log("[WS] disconnected — reconnecting in 5 s");
+        setTimeout(connectWebSocket, 5_000);
+      }
     });
 
     wsClient.on("error", (err) => {
-      console.error("[WS] error:", err.message);
+      if (err.message.includes("403")) {
+        console.error("[WS] 403 Forbidden — server rejected the WebSocket upgrade. " +
+          "Check TRUSTED_HOSTS on the server and any reverse proxy configuration.");
+      } else {
+        console.error("[WS] error:", err.message);
+      }
     });
   } catch (err) {
     console.error("[WS] failed to create WebSocket:", err.message);
-    setTimeout(connectWebSocket, 10_000);
+    if (!isQuitting) setTimeout(connectWebSocket, 10_000);
   }
 }
 
@@ -530,6 +840,14 @@ async function loadLayout() {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+  // Zone windows load pages/assets/WebSockets from the server (incl. /proxy); attach the device
+  // credentials to every request to *that origin only* (never to third-party hosts).
+  const serverUrl = new URL(SERVER_BASE);
+  const wsScheme = serverUrl.protocol === "https:" ? "wss" : "ws";
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${serverUrl.protocol}//${serverUrl.host}/*`, `${wsScheme}://${serverUrl.host}/*`] },
+    (details, callback) => callback({ requestHeaders: { ...details.requestHeaders, ...AUTH_HEADERS } })
+  );
   console.log("[CONFIG] loaded from:", _cfg.__loadedFrom || "defaults");
   console.log("[CONFIG] values:", JSON.stringify({
     server: SERVER_BASE,
@@ -542,8 +860,17 @@ app.whenReady().then(() => {
     height: WALL_HEIGHT,
     pixelShiftIntervalMs: PIXEL_SHIFT_INTERVAL_MS,
   }));
+  logDisplayDiagnostics();
   globalShortcut.register("Escape", () => app.quit());
   globalShortcut.register("Control+Q", () => app.quit());
+
+  // Multi-monitor arrangement can still be settling (xrandr/wlr-randr) when
+  // this fires, especially on Raspberry Pi boot. Recompute bounds whenever
+  // the OS reports a display change so zones end up correctly sized/placed
+  // even if the very first snapshot was taken too early.
+  screen.on("display-added", scheduleDisplayRecompute);
+  screen.on("display-removed", scheduleDisplayRecompute);
+  screen.on("display-metrics-changed", scheduleDisplayRecompute);
 
   startPixelShiftLoop();
   loadLayout();
@@ -551,10 +878,26 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  isQuitting = true;
+  if (wsClient) {
+    wsClient.terminate();
+    wsClient = null;
+  }
   if (pixelShiftTimer) {
     clearInterval(pixelShiftTimer);
     pixelShiftTimer = null;
   }
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  if (displaySettleTimer) {
+    clearTimeout(displaySettleTimer);
+    displaySettleTimer = null;
+  }
+  screen.removeAllListeners("display-added");
+  screen.removeAllListeners("display-removed");
+  screen.removeAllListeners("display-metrics-changed");
   globalShortcut.unregisterAll();
   closeBackgroundWindow();
   closePairingWindow();

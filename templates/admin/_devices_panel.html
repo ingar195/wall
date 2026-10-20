@@ -47,6 +47,10 @@
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="secondary">Force Refresh</button>
                 </form>
+                <form method="post" action="/admin/devices/{{ device.id }}/reset-secret" onsubmit="return confirm('Reset secret? The next client using this device id will take it over.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="secondary">Reset secret</button>
+                </form>
                 <form method="post" action="/admin/devices/{{ device.id }}/delete">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="danger">Delete</button>

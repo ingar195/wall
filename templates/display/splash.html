@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Splash</title>
+    <style>
+        html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+        #logo { position: absolute; left: 0; top: 0; white-space: nowrap; font: 800 18vh/1 "Segoe UI", sans-serif; letter-spacing: .05em; will-change: transform; }
+    </style>
+</head>
+<body>
+    <div id="logo"></div>
+    <script>
+        // ?text=Radxa            logo text
+        // ?cols=8&col=3          this screen is column 3 (0-based) of an 8-wide wall; every screen
+        // ?rows=1&row=0          derives the position from the wall clock, so the logo bounces
+        //                        across the whole wall in sync. Defaults: a single screen.
+        const q = new URLSearchParams(location.search);
+        const num = (k, d) => Number(q.get(k) ?? d) || d;
+        const cols = num("cols", 1), col = num("col", 0), rows = num("rows", 1), row = num("row", 0);
+        const SPEED_X = num("vx", 220), SPEED_Y = num("vy", 140); // px/s
+        const COLORS = ["#ff3b30", "#ff9500", "#ffd60a", "#34c759", "#5ac8fa", "#0a84ff", "#bf5af2", "#ff2d55"];
+        const logo = document.getElementById("logo");
+        logo.textContent = q.get("text") || "DISPLAY";
+
+        // Triangle wave: distance travelled p along a track of length L -> position + bounce count.
+        const bounce = (p, L) => { const m = p % (2 * L); return [m < L ? m : 2 * L - m, Math.floor(p / L)]; };
+
+        function frame() {
+            const sw = innerWidth, sh = innerHeight;
+            const lw = logo.offsetWidth, lh = logo.offsetHeight;
+            const t = Date.now() / 1000;
+            const [x, bx] = bounce(t * SPEED_X, Math.max(1, cols * sw - lw));
+            const [y, by] = bounce(t * SPEED_Y, Math.max(1, rows * sh - lh));
+            logo.style.transform = `translate(${x - col * sw}px, ${y - row * sh}px)`;
+            logo.style.color = COLORS[(bx + by) % COLORS.length];
+            requestAnimationFrame(frame);
+        }
+        frame();
+    </script>
+</body>
+</html>

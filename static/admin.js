@@ -1,5 +1,5 @@
 (function () {
-    const buttons = document.querySelectorAll(".tab-btn");
+    const buttons = document.querySelectorAll(".tab-btn[data-tab]");
     const panels = document.querySelectorAll(".tab-panel");
     if (buttons.length && panels.length) {
         function activate(tab) {
