@@ -742,8 +742,9 @@ function injectInput(msg) {
   if (target) {
     const wc = target.webContents;
     const b = target.getBounds();
-    const step = PIXEL_SHIFT_STEPS[pixelShiftStepIndex]; // content is CSS-shifted, undo it
-    const lx = gx - b.x - step.x, ly = gy - b.y - step.y;
+    // The pixel shift is a CSS transform: hit-testing follows it, and the screenshot shows the shifted
+    // content, so window coordinates == screenshot coordinates. (Subtracting the shift made clicks miss.)
+    const lx = gx - b.x, ly = gy - b.y;
     if (msg.kind === "click") {
       wc.focus(); // without this the first clicks only hover/focus; typed text then goes nowhere
       wc.sendInputEvent({ type: "mouseMove", x: lx, y: ly });
