@@ -21,8 +21,8 @@
  *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
-const { app, BrowserWindow, desktopCapturer, globalShortcut, net, screen, session } = require("electron");
-const { execFile } = require("child_process");
+const { app, BrowserWindow, clipboard, desktopCapturer, globalShortcut, Menu, net, screen, session } = require("electron");
+const { execFile, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const WebSocket = require("ws");
@@ -280,7 +280,32 @@ function getTargetDisplayBounds() {
   };
 }
 
+// While a right-click context menu is open it is an OS-level popup above our windows, so remote
+// clicks/keys must go to the OS (not into the page) until it closes.
+let contextMenuOpen = false;
+
+function attachContextMenu(win) {
+  win.webContents.on("context-menu", (_event, params) => {
+    const wc = win.webContents;
+    const items = [
+      { label: "Back", enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
+      { label: "Forward", enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
+      { label: "Reload", click: () => wc.reload() },
+      { type: "separator" },
+    ];
+    if (params.linkURL) items.push({ label: "Copy link address", click: () => clipboard.writeText(params.linkURL) });
+    if (params.isEditable) items.push({ role: "cut" }, { role: "copy" }, { role: "paste" });
+    else if (params.selectionText) items.push({ role: "copy" });
+    items.push({ role: "selectAll" });
+    contextMenuOpen = true;
+    const release = () => { contextMenuOpen = false; };
+    setTimeout(release, 20_000); // safety: never leave input stuck in OS mode
+    Menu.buildFromTemplate(items).popup({ window: win, x: params.x, y: params.y, callback: release });
+  });
+}
+
 function applyWindowDisplayCss(win) {
+  attachContextMenu(win);
   const css = `
     html, body {
       background: #000000 !important;
@@ -667,22 +692,36 @@ function onCaptureLease(ms, fullDisplay) {
 }
 
 /**
- * OS-level input on Windows (clicks/scroll/text/keys outside our zone windows, e.g. a native dialog).
- * One short PowerShell per input (~200-400 ms start-up). ponytail: batch/persistent helper if that lag matters.
+ * OS-level input on Windows (a real mouse/keyboard event, as if someone sat at the PC).
+ * One long-lived PowerShell reads one command per line from stdin, so each input costs ~ms, not a
+ * 300 ms process start-up. Restarted automatically if it dies.
  */
+const WIN_HEAD =
+  "Add-Type -AssemblyName System.Windows.Forms;" +
+  "Add-Type -Name M -Namespace W -MemberDefinition '" +
+  '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' +
+  '[DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);' +
+  '[DllImport("user32.dll")] public static extern void mouse_event(int f,int dx,int dy,int d,int e);' +
+  '[DllImport("user32.dll")] public static extern void keybd_event(byte k,byte s,int f,int e);' +
+  "';[void][W.M]::SetProcessDPIAware()";
+let winShell = null;
+
+function winSend(line) {
+  if (!winShell || winShell.exitCode !== null) {
+    winShell = spawn("powershell", ["-NoProfile", "-NoLogo", "-Command", "-"], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    winShell.on("exit", () => { winShell = null; });
+    winShell.stdin.on("error", () => {});
+    winShell.stdin.write(WIN_HEAD + "\n");
+  }
+  winShell.stdin.write(line + "\n");
+}
+
 function runWindowsInput(msg, px, py) {
-  const psq = (s) => String(s).replace(/'/g, "''");
-  const head =
-    "Add-Type -AssemblyName System.Windows.Forms;" +
-    "Add-Type -Name M -Namespace W -MemberDefinition '" +
-    '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' +
-    '[DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);' +
-    '[DllImport("user32.dll")] public static extern void mouse_event(int f,int dx,int dy,int d,int e);' +
-    "';[void][W.M]::SetProcessDPIAware();";
+  const psq = (t) => String(t).replace(/'/g, "''");
   let body = "";
   if (msg.kind === "click") {
     const [down, up] = msg.button === "right" ? [8, 16] : [2, 4];
-    body = `[void][W.M]::SetCursorPos(${px},${py});[W.M]::mouse_event(${down},0,0,0,0);[W.M]::mouse_event(${up},0,0,0,0)`;
+    body = `[void][W.M]::SetCursorPos(${px},${py});Start-Sleep -Milliseconds 30;[W.M]::mouse_event(${down},0,0,0,0);[W.M]::mouse_event(${up},0,0,0,0)`;
   } else if (msg.kind === "scroll") {
     body = `[void][W.M]::SetCursorPos(${px},${py});[W.M]::mouse_event(2048,0,0,${Math.round(-msg.dy)},0)`;
   } else if (msg.kind === "text") {
@@ -695,7 +734,7 @@ function runWindowsInput(msg, px, py) {
   } else {
     return;
   }
-  execFile("powershell", ["-NoProfile", "-Command", head + body], (err) => err && console.error("[WALL] win input:", err.message));
+  winSend(body);
 }
 
 let lastInputWin = null; // zone window that received the last click; keys/text go there
@@ -720,9 +759,7 @@ function injectInput(msg) {
     wallWins.forEach((w) => w.setAlwaysOnTop(false));
     setTimeout(() => wallWins.forEach((w) => !w.isDestroyed() && w.setAlwaysOnTop(true, w === backgroundWindow ? "normal" : "screen-saver")), 15_000);
     if (process.platform === "win32") {
-      execFile("powershell", ["-NoProfile", "-Command",
-        "Add-Type -Name K -Namespace W -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte k,byte s,int f,int e);';" +
-        "[W.K]::keybd_event(0x5B,0,0,0);[W.K]::keybd_event(0x5B,0,2,0)"]);
+      winSend("[W.M]::keybd_event(0x5B,0,0,0);[W.M]::keybd_event(0x5B,0,2,0)");
     } else {
       runXdotool("key", "super");
     }
@@ -734,7 +771,10 @@ function injectInput(msg) {
   const gy = Math.round(d.bounds.y + msg.y * d.bounds.height);
 
   let target = null;
-  if (msg.kind === "click" || msg.kind === "scroll") {
+  const osRightClick = msg.kind === "click" && msg.button === "right";
+  if (osRightClick) {
+    lastInputWin = null;
+  } else if (msg.kind === "click" || msg.kind === "scroll") {
     target = Array.from(zoneWindows.values()).find((w) => {
       if (w.isDestroyed()) return false;
       const b = w.getBounds();
@@ -744,6 +784,8 @@ function injectInput(msg) {
   } else {
     target = lastInputWin && !lastInputWin.isDestroyed() ? lastInputWin : null;
   }
+
+  if (contextMenuOpen || osRightClick) target = null; // menu is an OS popup / right-click is a real OS click
 
   if (target) {
     const wc = target.webContents;
@@ -926,6 +968,7 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  if (winShell) { winShell.kill(); winShell = null; }
   isQuitting = true;
   if (wsClient) {
     wsClient.terminate();

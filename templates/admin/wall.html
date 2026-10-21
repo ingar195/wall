@@ -174,7 +174,9 @@
     // Fullscreen the controlled tile; the browser itself exits on Esc (that Esc is not forwarded).
     $("fsBtn").onclick = () => selected && $("stage").requestFullscreen();
     // Entering/leaving fullscreen changes the requested resolution: refresh right away.
-    document.addEventListener("fullscreenchange", () => pollSoon(0));
+    // Leaving fullscreen (Esc) ends the control session, so the next click on a tile starts a fresh one
+    // instead of silently sending clicks to the old selection.
+    document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) select(null); pollSoon(0); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) pollSoon(0); });
     $("stopBtn").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); select(null); };
     $("txt").addEventListener("keydown", (e) => {
