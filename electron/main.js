@@ -21,7 +21,7 @@
  *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
-const { app, BrowserWindow, clipboard, desktopCapturer, globalShortcut, Menu, net, screen, session } = require("electron");
+const { app, BrowserWindow, desktopCapturer, globalShortcut, net, screen, session } = require("electron");
 const { execFile, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -280,27 +280,58 @@ function getTargetDisplayBounds() {
   };
 }
 
-// While a right-click context menu is open it is an OS-level popup above our windows, so remote
-// clicks/keys must go to the OS (not into the page) until it closes.
-let contextMenuOpen = false;
+/**
+ * Right-click menu drawn INSIDE the page (shadow DOM overlay) instead of a native OS popup: it shows up in
+ * page-based screenshots (Raspberry Pi), needs no OS-level input to operate, and behaves the same on
+ * every platform. Only appears when the page itself did not handle the right-click.
+ */
+const PAGE_MENU_JS = (items, x, y) => `(() => {
+  document.getElementById("__wall_menu")?.remove();
+  const host = document.createElement("div");
+  host.id = "__wall_menu";
+  host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:0;top:0";
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML = '<style>.m{position:fixed;background:#202124;color:#eee;font:15px/1 sans-serif;border:1px solid #555;border-radius:6px;padding:4px 0;min-width:170px;box-shadow:0 4px 16px #000a}.i{padding:9px 16px;cursor:default}.i:hover{background:#3b82f6}.i.d{color:#777}.s{height:1px;background:#444;margin:4px 0}</style><div class="m"></div>';
+  const menu = root.querySelector(".m");
+  // fixed actions (no eval: pages with a strict CSP would block it)
+  const act = (name, arg) => {
+    if (name === "back") history.back();
+    else if (name === "forward") history.forward();
+    else if (name === "reload") location.reload();
+    else if (name === "selectAll" || name === "copy" || name === "cut") document.execCommand(name);
+    else if (name === "copyLink") { const t = document.createElement("textarea"); t.value = arg; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
+  };
+  const close = () => { host.remove(); removeEventListener("mousedown", away, true); removeEventListener("keydown", esc, true); };
+  const away = (e) => { if (!e.composedPath().includes(host)) close(); };
+  const esc = (e) => { if (e.key === "Escape") close(); };
+  for (const it of ${JSON.stringify(items)}) {
+    const el = document.createElement("div");
+    if (it === null) { el.className = "s"; menu.append(el); continue; }
+    el.className = "i" + (it.enabled === false ? " d" : ""); el.textContent = it.label;
+    if (it.enabled !== false) el.addEventListener("click", () => { close(); act(it.act, it.arg); });
+    menu.append(el);
+  }
+  document.documentElement.append(host);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(0, Math.min(${x}, innerWidth - r.width)) + "px";
+  menu.style.top = Math.max(0, Math.min(${y}, innerHeight - r.height)) + "px";
+  addEventListener("mousedown", away, true); addEventListener("keydown", esc, true);
+})()`;
 
 function attachContextMenu(win) {
   win.webContents.on("context-menu", (_event, params) => {
     const wc = win.webContents;
     const items = [
-      { label: "Back", enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
-      { label: "Forward", enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
-      { label: "Reload", click: () => wc.reload() },
-      { type: "separator" },
+      { label: "Back", act: "back", enabled: wc.navigationHistory.canGoBack() },
+      { label: "Forward", act: "forward", enabled: wc.navigationHistory.canGoForward() },
+      { label: "Reload", act: "reload" },
+      null,
     ];
-    if (params.linkURL) items.push({ label: "Copy link address", click: () => clipboard.writeText(params.linkURL) });
-    if (params.isEditable) items.push({ role: "cut" }, { role: "copy" }, { role: "paste" });
-    else if (params.selectionText) items.push({ role: "copy" });
-    items.push({ role: "selectAll" });
-    contextMenuOpen = true;
-    const release = () => { contextMenuOpen = false; };
-    setTimeout(release, 20_000); // safety: never leave input stuck in OS mode
-    Menu.buildFromTemplate(items).popup({ window: win, x: params.x, y: params.y, callback: release });
+    if (params.linkURL) items.push({ label: "Copy link address", act: "copyLink", arg: params.linkURL });
+    if (params.isEditable) items.push({ label: "Cut", act: "cut" }, { label: "Copy", act: "copy" });
+    else if (params.selectionText) items.push({ label: "Copy", act: "copy" });
+    items.push({ label: "Select all", act: "selectAll" });
+    wc.executeJavaScript(PAGE_MENU_JS(items, params.x, params.y)).catch(() => {});
   });
 }
 
@@ -615,6 +646,7 @@ let captureMs = 2500;
 let captureUntil = 0;
 let captureRunning = false;
 let captureFallbackWarned = false;
+let pageCaptureWarned = false;
 let wakeCapture = null; // interrupts the capture loop's sleep
 const lastFrame = new Map(); // display index -> {hash, at}: skip re-uploading identical frames
 const FRAME_KEEPALIVE_MS = 30_000; // ...but still refresh now and then (server restart, new viewer)
@@ -629,6 +661,60 @@ function nudgeCapture() {
 /** Stable display order (left→right, top→bottom) so "display 0" means the same screen everywhere. */
 function sortedDisplays() {
   return screen.getAllDisplays().slice().sort((a, b) => a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y);
+}
+
+/**
+ * Capture mode: "auto" (default) = desktop capture, falling back to rendering our own zone windows when
+ * that comes back black or fails; "screen" = desktop capture only; "page" = zone windows only.
+ * Raspberry Pi (X11 via XWayland under a Wayland compositor) typically gives black desktop captures,
+ * while capturePage() of our own windows works regardless of the compositor. Override: WALL_CAPTURE.
+ */
+const CAPTURE_MODE = String(process.env.WALL_CAPTURE || _cfg.capture || "auto").toLowerCase();
+let compositorWin = null;
+
+function isBlank(image) {
+  const bm = image.toBitmap();
+  for (let i = 0; i < bm.length; i += 4 * 97) if (bm[i] | bm[i + 1] | bm[i + 2]) return false;
+  return true;
+}
+
+/** JPEG of one display built from the zone windows on it (no desktop capture needed). */
+async function captureDisplayFromPages(d, size, quality) {
+  const wins = Array.from(zoneWindows.values()).filter((w) => {
+    if (w.isDestroyed()) return false;
+    const b = w.getBounds();
+    return b.x < d.bounds.x + d.bounds.width && b.x + b.width > d.bounds.x && b.y < d.bounds.y + d.bounds.height && b.y + b.height > d.bounds.y;
+  });
+  if (!wins.length) return null;
+  const scale = Math.min(size.width / d.bounds.width, size.height / d.bounds.height);
+  const outW = Math.round(d.bounds.width * scale), outH = Math.round(d.bounds.height * scale);
+  // one window exactly on this display: just that window's pixels
+  if (wins.length === 1) {
+    const b = wins[0].getBounds();
+    if (b.x === d.bounds.x && b.y === d.bounds.y && b.width === d.bounds.width && b.height === d.bounds.height) {
+      return (await wins[0].webContents.capturePage()).resize({ width: outW, height: outH }).toJPEG(quality);
+    }
+  }
+  const parts = [];
+  for (const w of wins) {
+    const b = w.getBounds();
+    const img = (await w.webContents.capturePage()).resize({ width: Math.max(1, Math.round(b.width * scale)), height: Math.max(1, Math.round(b.height * scale)) });
+    parts.push({ x: Math.round((b.x - d.bounds.x) * scale), y: Math.round((b.y - d.bounds.y) * scale), url: "data:image/jpeg;base64," + img.toJPEG(92).toString("base64") });
+  }
+  // several windows on one display: stitch them on a canvas in a hidden renderer
+  if (!compositorWin || compositorWin.isDestroyed()) {
+    compositorWin = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
+    await compositorWin.loadURL("data:text/html,<canvas id=c></canvas>");
+  }
+  const dataUrl = await compositorWin.webContents.executeJavaScript(`(async () => {
+    const c = document.getElementById('c'); c.width = ${outW}; c.height = ${outH};
+    const g = c.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, ${outW}, ${outH});
+    for (const p of ${JSON.stringify(parts)}) {
+      const im = new Image(); im.src = p.url; await im.decode(); g.drawImage(im, p.x, p.y);
+    }
+    return c.toDataURL('image/jpeg', ${quality / 100});
+  })()`);
+  return Buffer.from(dataUrl.split(",")[1], "base64");
 }
 
 async function captureLoop() {
@@ -649,24 +735,45 @@ async function captureLoop() {
               height: Math.max(...fullSet.map((d) => Math.round(d.bounds.height * d.scaleFactor))),
             }
           : { width: 1280, height: 720 };
-        const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
+        const quality = full ? 90 : 75;
+        let sources = [];
+        if (CAPTURE_MODE !== "page") {
+          try {
+            sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
+          } catch (err) {
+            if (CAPTURE_MODE === "screen") throw err;
+            console.warn("[WALL] desktop capture failed, using page capture:", err.message);
+          }
+        }
         for (let i = 0; i < displays.length; i++) {
           if (full && !fullSet.includes(displays[i])) continue;
           let src = sources.find((s) => s.display_id === String(displays[i].id));
-          if (!src) {
+          if (!src && sources.length) {
             // ponytail: some X11 setups report no display_id; index order may not match left→right order
             if (!captureFallbackWarned) { console.warn("[WALL] capture: no display_id match, falling back to source order"); captureFallbackWarned = true; }
             src = sources[i];
           }
-          if (!src) continue;
-          const hash = require("crypto").createHash("md5").update(src.thumbnail.toBitmap()).digest("hex") + (full ? "f" : "");
-          const prev = lastFrame.get(i);
-          if (prev && prev.hash === hash && Date.now() - prev.at < FRAME_KEEPALIVE_MS) continue; // static screen: nothing to send
-          lastFrame.set(i, { hash, at: Date.now() });
+          let jpeg = null, hash = null;
+          if (src && (CAPTURE_MODE === "screen" || !isBlank(src.thumbnail))) {
+            hash = require("crypto").createHash("md5").update(src.thumbnail.toBitmap()).digest("hex");
+            const prev = lastFrame.get(i);
+            if (prev && prev.hash === hash + (full ? "f" : "") && Date.now() - prev.at < FRAME_KEEPALIVE_MS) continue; // static screen
+            jpeg = src.thumbnail.toJPEG(quality);
+          } else if (CAPTURE_MODE !== "screen") {
+            if (!pageCaptureWarned) { console.warn("[WALL] desktop capture blank/unavailable: using zone-window capture"); pageCaptureWarned = true; }
+            jpeg = await captureDisplayFromPages(displays[i], thumbnailSize, quality);
+            if (!jpeg) continue;
+            hash = require("crypto").createHash("md5").update(jpeg).digest("hex");
+            const prev = lastFrame.get(i);
+            if (prev && prev.hash === hash + (full ? "f" : "") && Date.now() - prev.at < FRAME_KEEPALIVE_MS) continue;
+          } else {
+            continue;
+          }
+          lastFrame.set(i, { hash: hash + (full ? "f" : ""), at: Date.now() });
           await net.fetch(`${API_URL}/screenshot/${i}`, {
             method: "POST",
             headers: { ...AUTH_HEADERS, "Content-Type": "image/jpeg" },
-            body: src.thumbnail.toJPEG(full ? 90 : 75),
+            body: jpeg,
           });
         }
       } catch (err) {
@@ -771,10 +878,7 @@ function injectInput(msg) {
   const gy = Math.round(d.bounds.y + msg.y * d.bounds.height);
 
   let target = null;
-  const osRightClick = msg.kind === "click" && msg.button === "right";
-  if (osRightClick) {
-    lastInputWin = null;
-  } else if (msg.kind === "click" || msg.kind === "scroll") {
+  if (msg.kind === "click" || msg.kind === "scroll") {
     target = Array.from(zoneWindows.values()).find((w) => {
       if (w.isDestroyed()) return false;
       const b = w.getBounds();
@@ -784,8 +888,6 @@ function injectInput(msg) {
   } else {
     target = lastInputWin && !lastInputWin.isDestroyed() ? lastInputWin : null;
   }
-
-  if (contextMenuOpen || osRightClick) target = null; // menu is an OS popup / right-click is a real OS click
 
   if (target) {
     const wc = target.webContents;
