@@ -591,6 +591,8 @@ let captureUntil = 0;
 let captureRunning = false;
 let captureFallbackWarned = false;
 let wakeCapture = null; // interrupts the capture loop's sleep
+const lastFrame = new Map(); // display index -> {hash, at}: skip re-uploading identical frames
+const FRAME_KEEPALIVE_MS = 30_000; // ...but still refresh now and then (server restart, new viewer)
 let captureFull = null; // display index being viewed fullscreen -> capture it at native resolution
 
 /** After an input, grab a fresh frame soon so the admin sees the effect (and stops re-clicking). */
@@ -632,6 +634,10 @@ async function captureLoop() {
             src = sources[i];
           }
           if (!src) continue;
+          const hash = require("crypto").createHash("md5").update(src.thumbnail.toBitmap()).digest("hex") + (full ? "f" : "");
+          const prev = lastFrame.get(i);
+          if (prev && prev.hash === hash && Date.now() - prev.at < FRAME_KEEPALIVE_MS) continue; // static screen: nothing to send
+          lastFrame.set(i, { hash, at: Date.now() });
           await net.fetch(`${API_URL}/screenshot/${i}`, {
             method: "POST",
             headers: { ...AUTH_HEADERS, "Content-Type": "image/jpeg" },

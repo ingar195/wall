@@ -135,7 +135,9 @@
 
     // One request at a time so fast typing can't arrive out of order.
     let inputQueue = Promise.resolve();
+    let lastInputAt = 0;
     function sendInput(tile, extra) {
+        lastInputAt = Date.now();
         inputQueue = inputQueue.then(() => post("/admin/wall/input", { device: tile.cfg.device, display: Math.max(0, tile.cfg.display), ...extra }))
             .then((r) => { if (!r.delivered) $("status").textContent = "Device offline"; else { pollSoon(300); setTimeout(() => pollSoon(0), 900); } })
             .catch((err) => { $("status").textContent = err.message; });
@@ -173,6 +175,7 @@
     $("fsBtn").onclick = () => selected && $("stage").requestFullscreen();
     // Entering/leaving fullscreen changes the requested resolution: refresh right away.
     document.addEventListener("fullscreenchange", () => pollSoon(0));
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) pollSoon(0); });
     $("stopBtn").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); select(null); };
     $("txt").addEventListener("keydown", (e) => {
         if (e.key === "Enter" && selected) { sendInput(selected, { kind: "text", text: e.target.value }); e.target.value = ""; }
@@ -195,8 +198,10 @@
 
     async function poll() {
         const ids = [...new Set(config.tiles.map((t) => t.device))];
+        // Hidden tab: don't renew the lease, so the clients stop capturing (they idle out after ~15 s).
+        if (document.hidden) { pollSoon(2000); return; }
         try {
-            const state = await post("/admin/wall/watch", { devices: ids, control: selected && selected.cfg.device, display: selected ? selected.cfg.display : 0, full: !!document.fullscreenElement });
+            const state = await post("/admin/wall/watch", { devices: ids, control: selected && selected.cfg.device, display: selected ? selected.cfg.display : 0, full: !!document.fullscreenElement, active: Date.now() - lastInputAt < 8000 });
             for (const tile of tiles) {
                 const d = state[tile.cfg.device];
                 tile.el.classList.toggle("offline", !d || !d.online);

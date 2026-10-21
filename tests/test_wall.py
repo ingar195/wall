@@ -105,3 +105,15 @@ def test_all_displays_tile_is_valid_and_requests_native_for_all(admin):
     with c.websocket_connect("/ws/device/d1", headers={"host": "localhost"}) as ws:
         c.post("/admin/wall/watch", json={"devices": ["d1"], "control": "d1", "display": -1, "full": True}, headers=h)
         assert ws.receive_json() == {"action": "capture", "ms": 400, "full": True, "display": -1}
+
+
+def test_capture_lease_backs_off_when_not_actively_controlled(admin):
+    c, h = admin
+    c.get("/api/device/d2")
+    with c.websocket_connect("/ws/device/d1", headers={"host": "localhost"}) as ws:
+        c.post("/admin/wall/watch", json={"devices": ["d1"]}, headers=h)
+        assert ws.receive_json()["ms"] == 5000  # grid view only
+        c.post("/admin/wall/watch", json={"devices": ["d1"], "control": "d1", "active": False}, headers=h)
+        assert ws.receive_json()["ms"] == 1500  # selected but idle
+        c.post("/admin/wall/watch", json={"devices": ["d1"], "control": "d1", "active": True}, headers=h)
+        assert ws.receive_json()["ms"] == 400  # actively controlling

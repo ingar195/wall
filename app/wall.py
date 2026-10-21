@@ -142,7 +142,12 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
             device = db.get(Device, device_id)
             if not device:
                 continue
-            ms = 400 if device_id == control else 2500
+            # Desktop capture costs ~0.5 s of client CPU/GPU each time, so capture only as often as needed:
+            # actively controlled -> back to back; controlled but idle -> 1.5 s; just watching the grid -> 5 s.
+            if device_id == control:
+                ms = 400 if data.get("active", True) else 1500
+            else:
+                ms = 5000
             lease = {"action": "capture", "ms": ms}
             if full and device_id == control:
                 lease.update(full=True, display=control_display)
