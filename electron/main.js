@@ -280,63 +280,7 @@ function getTargetDisplayBounds() {
   };
 }
 
-/**
- * Right-click menu drawn INSIDE the page (shadow DOM overlay) instead of a native OS popup: it shows up in
- * page-based screenshots (Raspberry Pi), needs no OS-level input to operate, and behaves the same on
- * every platform. Only appears when the page itself did not handle the right-click.
- */
-const PAGE_MENU_JS = (items, x, y) => `(() => {
-  document.getElementById("__wall_menu")?.remove();
-  const host = document.createElement("div");
-  host.id = "__wall_menu";
-  host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:0;top:0";
-  const root = host.attachShadow({ mode: "open" });
-  root.innerHTML = '<style>.m{position:fixed;background:#202124;color:#eee;font:15px/1 sans-serif;border:1px solid #555;border-radius:6px;padding:4px 0;min-width:170px;box-shadow:0 4px 16px #000a}.i{padding:9px 16px;cursor:default}.i:hover{background:#3b82f6}.i.d{color:#777}.s{height:1px;background:#444;margin:4px 0}</style><div class="m"></div>';
-  const menu = root.querySelector(".m");
-  // fixed actions (no eval: pages with a strict CSP would block it)
-  const act = (name, arg) => {
-    if (name === "back") history.back();
-    else if (name === "forward") history.forward();
-    else if (name === "reload") location.reload();
-    else if (name === "selectAll" || name === "copy" || name === "cut") document.execCommand(name);
-    else if (name === "copyLink") { const t = document.createElement("textarea"); t.value = arg; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
-  };
-  const close = () => { host.remove(); removeEventListener("mousedown", away, true); removeEventListener("keydown", esc, true); };
-  const away = (e) => { if (!e.composedPath().includes(host)) close(); };
-  const esc = (e) => { if (e.key === "Escape") close(); };
-  for (const it of ${JSON.stringify(items)}) {
-    const el = document.createElement("div");
-    if (it === null) { el.className = "s"; menu.append(el); continue; }
-    el.className = "i" + (it.enabled === false ? " d" : ""); el.textContent = it.label;
-    if (it.enabled !== false) el.addEventListener("click", () => { close(); act(it.act, it.arg); });
-    menu.append(el);
-  }
-  document.documentElement.append(host);
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(0, Math.min(${x}, innerWidth - r.width)) + "px";
-  menu.style.top = Math.max(0, Math.min(${y}, innerHeight - r.height)) + "px";
-  addEventListener("mousedown", away, true); addEventListener("keydown", esc, true);
-})()`;
-
-function attachContextMenu(win) {
-  win.webContents.on("context-menu", (_event, params) => {
-    const wc = win.webContents;
-    const items = [
-      { label: "Back", act: "back", enabled: wc.navigationHistory.canGoBack() },
-      { label: "Forward", act: "forward", enabled: wc.navigationHistory.canGoForward() },
-      { label: "Reload", act: "reload" },
-      null,
-    ];
-    if (params.linkURL) items.push({ label: "Copy link address", act: "copyLink", arg: params.linkURL });
-    if (params.isEditable) items.push({ label: "Cut", act: "cut" }, { label: "Copy", act: "copy" });
-    else if (params.selectionText) items.push({ label: "Copy", act: "copy" });
-    items.push({ label: "Select all", act: "selectAll" });
-    wc.executeJavaScript(PAGE_MENU_JS(items, params.x, params.y)).catch(() => {});
-  });
-}
-
 function applyWindowDisplayCss(win) {
-  attachContextMenu(win);
   const css = `
     html, body {
       background: #000000 !important;
