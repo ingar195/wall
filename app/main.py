@@ -39,6 +39,9 @@ from app.services import (
     get_layout_assignment_map,
     get_layout_zone_views,
     get_or_create_device,
+    get_splash,
+    splash_active_now,
+    set_splash,
     get_source_token,
     is_layout_active_now,
     mark_device_seen,
@@ -323,6 +326,7 @@ async def admin_dashboard(request: Request, db: Session = Depends(get_db)) -> HT
             "layouts": layouts,
             "sources": sources,
             "layout_editor_rows": get_layout_editor_rows(db),
+            "splash": get_splash(db),
             "audit_logs": audit_logs,
             "csrf_token": get_or_create_csrf_token(request),
         },
@@ -385,6 +389,28 @@ async def admin_delete_source(
         raise HTTPException(status_code=404, detail="Unknown source")
     audit(request, db, "source.delete", f"Deleted source {source.name} ({source.id})")
     delete_content_source(db, source)
+    return redirect("/admin")
+
+
+@app.post("/admin/splash")
+async def admin_set_splash(
+    request: Request,
+    mode: str = Form(...),
+    schedule_start: str = Form(""),
+    schedule_end: str = Form(""),
+    schedule_days: List[int] = Form(default=[]),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    require_admin(request)
+    require_csrf(request, csrf_token)
+    try:
+        set_splash(db, mode, schedule_start, schedule_end, schedule_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(request, db, "splash.set", f"Splash mode {mode}")
+    for device in list_devices(db):
+        await manager.send(device.id, {"action": "new_layout"})
     return redirect("/admin")
 
 
@@ -621,6 +647,17 @@ async def api_device_layout(device_id: str, request: Request, db: Session = Depe
     layout = db.scalars(select(Layout).where(Layout.id == device.current_layout_id)).first()
     if not layout:
         raise HTTPException(status_code=500, detail="Assigned layout not found")
+
+    # Splash override: one full-screen zone; /splash positions itself from the saved wall layout.
+    if splash_active_now(get_splash(db)):
+        return {
+            "status": "paired",
+            "device_id": device.id,
+            "device_name": device.name,
+            "layout": {"id": layout.id, "name": "Splash", "columns": 1, "rows": 1},
+            "zones": [{"id": "splash", "name": "Splash", "x": 0, "y": 0, "w": 1, "h": 1,
+                       "url": str(request.base_url).rstrip("/") + "/splash"}],
+        }
 
     # If the layout has a schedule and we are currently outside its window, tell
     # the display to show a blank screen rather than stale content.

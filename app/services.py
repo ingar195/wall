@@ -4,12 +4,13 @@ import json
 import re
 import random
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLog, ContentSource, Device, Layout, LayoutAssignment
+from app.models import AuditLog, ContentSource, Device, Layout, LayoutAssignment, SplashSetting
 from app.schemas import ZoneView
 from app.security import decrypt_token, encrypt_token
 
@@ -122,6 +123,35 @@ def is_layout_active_now(layout: Layout) -> bool:
     if end and current_hhmm >= end:
         return False
     return True
+
+
+def get_splash(db: Session) -> SplashSetting:
+    row = db.get(SplashSetting, 1)
+    if not row:
+        row = SplashSetting(id=1)
+        db.add(row)
+        db.commit()
+    return row
+
+
+def splash_active_now(s: SplashSetting) -> bool:
+    if s.mode == "on":
+        return True
+    if s.mode != "schedule" or not (s.schedule_start or s.schedule_end or s.schedule_days):
+        return False
+    return is_layout_active_now(SimpleNamespace(schedule_enabled=True, schedule_start=s.schedule_start,
+                                                schedule_end=s.schedule_end, schedule_days=s.schedule_days))
+
+
+def set_splash(db: Session, mode: str, start: str | None, end: str | None, days: list[int] | None) -> SplashSetting:
+    if mode not in ("off", "on", "schedule"):
+        raise ValueError("Bad splash mode")
+    row = get_splash(db)
+    row.mode = mode
+    row.schedule_start, row.schedule_end = _parse_hhmm(start), _parse_hhmm(end)
+    row.schedule_days = _parse_schedule_days(days)
+    db.commit()
+    return row
 
 
 def create_layout(

@@ -297,6 +297,33 @@
     </div>
     <!-- Devices Tab -->
     <div id="tab-devices" class="tab-panel hidden" role="tabpanel">
+        <section class="panel">
+            <h2>OSC logo splash <span class="muted">(all screens)</span></h2>
+            <form method="post" action="/admin/splash" class="stack-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label>
+                    <span>Mode</span>
+                    <select name="mode">
+                        <option value="off" {% if splash.mode == "off" %}selected{% endif %}>Off (normal layouts)</option>
+                        <option value="on" {% if splash.mode == "on" %}selected{% endif %}>On now, all screens</option>
+                        <option value="schedule" {% if splash.mode == "schedule" %}selected{% endif %}>Only during schedule</option>
+                    </select>
+                </label>
+                <div class="schedule-row">
+                    <label><span>Start</span><input type="time" name="schedule_start" value="{{ splash.schedule_start or '' }}"></label>
+                    <label><span>End</span><input type="time" name="schedule_end" value="{{ splash.schedule_end or '' }}"></label>
+                </div>
+                <div class="schedule-days">
+                    {% for val, label in [(0,"Mon"),(1,"Tue"),(2,"Wed"),(3,"Thu"),(4,"Fri"),(5,"Sat"),(6,"Sun")] %}
+                    <label class="day-check">
+                        <input type="checkbox" name="schedule_days" value="{{ val }}" {% if splash.schedule_days and val in splash.schedule_days %}checked{% endif %}>
+                        <span>{{ label }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+                <button type="submit">Apply to all screens</button>
+            </form>
+        </section>
         <section class="grid-two">
             <article class="panel">
                 <h2>Pair Device</h2>

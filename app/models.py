@@ -67,6 +67,18 @@ class LayoutAssignment(Base):
     source: Mapped[ContentSource] = relationship()
 
 
+class SplashSetting(Base):
+    """Single row: show the bouncing OSC logo on every paired screen (mode on, or inside the schedule)."""
+
+    __tablename__ = "splash_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, default="off")  # off | on | schedule
+    schedule_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    schedule_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    schedule_days: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
 class WallLayout(Base):
     """Admin 'wall view' arrangement: which device display shows in which tile.
 
