@@ -7,7 +7,7 @@
     <style>
         html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
         #logo { position: absolute; left: 0; top: 0; white-space: nowrap; font: 800 18vh/1 "Segoe UI", sans-serif; letter-spacing: .05em; will-change: transform; }
-            #logo.img { height: 22vh; aspect-ratio: 604 / 453; background: currentColor; -webkit-mask: url(/static/osc-logo.png) center / contain no-repeat; mask: url(/static/osc-logo.png) center / contain no-repeat; }
+            #logo.img { background: currentColor; -webkit-mask: url(/static/osc-logo.png) center / contain no-repeat; mask: url(/static/osc-logo.png) center / contain no-repeat; }
     </style>
 </head>
 <body>
@@ -22,21 +22,28 @@
         const W = {{ wall | tojson }}; // set when ?device=&display= match a tile of the saved wall layout
         const cols = W ? W.cols : num("cols", 1), col = W ? W.col : num("col", 0), rows = W ? W.rows : num("rows", 1), row = W ? W.row : num("row", 0);
         const rw = W ? W.cw : 1, rh = W ? W.rh : 1; // grid cells this window covers
-        const SPEED_X = num("vx", 220), SPEED_Y = num("vy", 140); // px/s
+        // Everything below is in wall units (1 = one screen cell), NOT pixels. The position comes from the absolute wall
+        // clock, so a 1px (or 1080p vs 1200p) difference in a PC's track length would put it at a completely different
+        // point of the path. With a fixed logo size and speed in cells, every PC computes exactly the same path.
+        const SPEED_X = num("vx", 220) / 1920, SPEED_Y = num("vy", 140) / 1200; // cells/s (vx/vy given as px/s on a 1920x1200 screen)
+        const LOGO_W = 0.18, LOGO_H = 0.22; // logo box in cells: fraction of a screen's width / height
         const COLORS = ["#ff3b30", "#ff9500", "#ffd60a", "#34c759", "#5ac8fa", "#0a84ff", "#bf5af2", "#ff2d55"];
         const logo = document.getElementById("logo");
-        if (q.get("text")) logo.textContent = q.get("text"); else logo.className = "img"; // default: OSC logo
+        const isText = !!q.get("text");
+        if (isText) logo.textContent = q.get("text"); else logo.className = "img"; // default: OSC logo
 
         // Triangle wave: distance travelled p along a track of length L -> position + bounce count.
         const bounce = (p, L) => { const m = p % (2 * L); return [m < L ? m : 2 * L - m, Math.floor(p / L)]; };
 
         function frame() {
-            const sw = innerWidth / rw, sh = innerHeight / rh; // size of one grid cell
-            const lw = logo.offsetWidth, lh = logo.offsetHeight;
+            const sw = innerWidth / rw, sh = innerHeight / rh; // size of one grid cell in px
+            if (isText) logo.style.fontSize = (0.18 * sh) + "px";
+            else { logo.style.width = (LOGO_W * sw) + "px"; logo.style.height = (LOGO_H * sh) + "px"; }
+            const lw = isText ? logo.offsetWidth / sw : LOGO_W, lh = isText ? logo.offsetHeight / sh : LOGO_H;
             const t = Date.now() / 1000;
-            const [x, bx] = bounce(t * SPEED_X, Math.max(1, cols * sw - lw));
-            const [y, by] = bounce(t * SPEED_Y, Math.max(1, rows * sh - lh));
-            logo.style.transform = `translate(${x - col * sw}px, ${y - row * sh}px)`;
+            const [x, bx] = bounce(t * SPEED_X, Math.max(0.01, cols - lw));
+            const [y, by] = bounce(t * SPEED_Y, Math.max(0.01, rows - lh));
+            logo.style.transform = `translate(${(x - col) * sw}px, ${(y - row) * sh}px)`;
             logo.style.color = COLORS[(bx + by) % COLORS.length];
             requestAnimationFrame(frame);
         }
