@@ -32,6 +32,7 @@
         const COLORS = ["#ff3b30", "#ff9500", "#ffd60a", "#34c759", "#5ac8fa", "#0a84ff", "#bf5af2", "#ff2d55"];
         const logo = document.getElementById("logo");
         const isText = !!q.get("text");
+        const TEXT_W = isText ? q.get("text").length * 0.62 * 0.18 * (1200 / 1920) : 0; // chars * em-width * font size, in cells (nominal 1920x1200 screen)
         if (isText) logo.textContent = q.get("text"); else logo.className = "img"; // default: OSC logo
 
         // Bounce with a bit of randomness: every pass across the track has its own speed (0.6x-1.4x), taken from a
@@ -53,7 +54,7 @@
             const sw = innerWidth / rw, sh = innerHeight / rh; // size of one grid cell in px
             if (isText) logo.style.fontSize = (0.18 * sh) + "px";
             else { logo.style.width = (LOGO_W * sw) + "px"; logo.style.height = (LOGO_H * sh) + "px"; }
-            const lw = isText ? logo.offsetWidth / sw : LOGO_W, lh = isText ? logo.offsetHeight / sh : LOGO_H;
+            const lw = isText ? TEXT_W : LOGO_W, lh = isText ? 0.18 : LOGO_H; // text size is an estimate, not measured: fonts differ per PC
             const t = Date.now() / 1000;
             const [x, bx] = bounce(t, Math.max(0.01, cols - lw), SPEED_X, MX);
             const [y, by] = bounce(t, Math.max(0.01, rows - lh), SPEED_Y, MY);
