@@ -193,11 +193,10 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
 
     @router.get("/splash", response_class=HTMLResponse)
     async def splash(request: Request, device: str = "", display: int = 0, db: Session = Depends(get_db)) -> HTMLResponse:
-        # One logo across the whole wall: place this screen using the first saved wall layout.
+        # One logo across the whole wall: place this screen using the first saved wall layout that has this screen.
         # Region = bounding box (in grid cells) of this device's display tile(s); display -1 = all of them.
         wall = None
-        row = db.scalars(select(WallLayout).order_by(WallLayout.name)).first()
-        if row and device:
+        for row in db.scalars(select(WallLayout).order_by(WallLayout.name)):
             tiles = [t for t in row.config["tiles"] if t["device"] == device and display in (-1, t["display"])]
             if tiles:
                 x0, y0 = min(t["x"] for t in tiles), min(t["y"] for t in tiles)
@@ -205,6 +204,7 @@ def make_wall_router(require_admin, require_csrf_header, get_csrf_token, templat
                     "cols": row.config["columns"], "rows": row.config["rows"], "col": x0, "row": y0,
                     "cw": max(t["x"] + t["w"] for t in tiles) - x0, "rh": max(t["y"] + t["h"] for t in tiles) - y0,
                 }
+                break
         return templates.TemplateResponse(request, "display/splash.html", {"wall": wall})
 
     return router
