@@ -583,8 +583,9 @@ function applyLayout(data) {
     // reapplied here when the grid/display layout actually changes.
     win.setBounds(bounds, false);
     const currentUrl = win.webContents.getURL();
-    if (currentUrl !== zone.url) {
-      win.loadURL(zone.url);
+    const targetUrl = withSplashParams(zone.url, bounds);
+    if (currentUrl !== targetUrl) {
+      win.loadURL(targetUrl);
     }
     if (!win.isVisible()) {
       win.showInactive();
