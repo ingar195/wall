@@ -309,6 +309,14 @@
                         <option value="schedule" {% if splash.mode == "schedule" %}selected{% endif %}>Only during schedule</option>
                     </select>
                 </label>
+                <label>
+                    <span>Custom text <span class="muted">(empty = OSC logo)</span></span>
+                    <input type="text" name="text" maxlength="60" value="{{ splash.text }}" placeholder="OSC">
+                </label>
+                <label>
+                    <span>Speed: <output>{{ splash.speed }}</output>%</span>
+                    <input type="range" name="speed" min="10" max="500" step="10" value="{{ splash.speed }}" oninput="this.previousElementSibling.querySelector('output').value = this.value">
+                </label>
                 <div class="schedule-row">
                     <label><span>Start</span><input type="time" name="schedule_start" value="{{ splash.schedule_start or '' }}"></label>
                     <label><span>End</span><input type="time" name="schedule_end" value="{{ splash.schedule_end or '' }}"></label>

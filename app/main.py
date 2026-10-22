@@ -5,7 +5,7 @@ import json
 import re
 import secrets
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from contextlib import asynccontextmanager
 
 import asyncio
@@ -96,6 +96,7 @@ def _migrate_add_schedule_columns() -> None:
         ],
         "layout_assignments": [("assignment_type", "VARCHAR(20) NOT NULL DEFAULT 'redirect'")],
         "devices": [("secret_hash", "VARCHAR(64)")],
+        "splash_settings": [("text", "VARCHAR(60) NOT NULL DEFAULT ''"), ("speed", "INTEGER NOT NULL DEFAULT 100")],
     }
     inspector = inspect(engine)
     with engine.begin() as conn:
@@ -399,13 +400,15 @@ async def admin_set_splash(
     schedule_start: str = Form(""),
     schedule_end: str = Form(""),
     schedule_days: List[int] = Form(default=[]),
+    text: str = Form(""),
+    speed: int = Form(100),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     require_admin(request)
     require_csrf(request, csrf_token)
     try:
-        set_splash(db, mode, schedule_start, schedule_end, schedule_days)
+        set_splash(db, mode, schedule_start, schedule_end, schedule_days, text, speed)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(request, db, "splash.set", f"Splash mode {mode}")
@@ -649,14 +652,15 @@ async def api_device_layout(device_id: str, request: Request, db: Session = Depe
         raise HTTPException(status_code=500, detail="Assigned layout not found")
 
     # Splash override: one full-screen zone; /splash positions itself from the saved wall layout.
-    if splash_active_now(get_splash(db)):
+    splash = get_splash(db)
+    if splash_active_now(splash):
         return {
             "status": "paired",
             "device_id": device.id,
             "device_name": device.name,
             "layout": {"id": layout.id, "name": "Splash", "columns": 1, "rows": 1},
             "zones": [{"id": "splash", "name": "Splash", "x": 0, "y": 0, "w": 1, "h": 1,
-                       "url": str(request.base_url).rstrip("/") + "/splash"}],
+                       "url": str(request.base_url).rstrip("/") + "/splash?" + urlencode({"text": splash.text, "speed": splash.speed})}],
         }
 
     # If the layout has a schedule and we are currently outside its window, tell

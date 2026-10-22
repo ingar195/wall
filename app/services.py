@@ -143,13 +143,14 @@ def splash_active_now(s: SplashSetting) -> bool:
                                                 schedule_end=s.schedule_end, schedule_days=s.schedule_days))
 
 
-def set_splash(db: Session, mode: str, start: str | None, end: str | None, days: list[int] | None) -> SplashSetting:
+def set_splash(db: Session, mode: str, start: str | None, end: str | None, days: list[int] | None, text: str = "", speed: int = 100) -> SplashSetting:
     if mode not in ("off", "on", "schedule"):
         raise ValueError("Bad splash mode")
     row = get_splash(db)
     row.mode = mode
     row.schedule_start, row.schedule_end = _parse_hhmm(start), _parse_hhmm(end)
     row.schedule_days = _parse_schedule_days(days)
+    row.text, row.speed = text.strip()[:60], max(10, min(500, speed))
     db.commit()
     return row
 

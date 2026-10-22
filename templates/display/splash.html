@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Splash</title>
     <style>
-        html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+        html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+        * { cursor: none !important; }
         #logo { position: absolute; left: 0; top: 0; white-space: nowrap; font: 800 18vh/1 "Segoe UI", sans-serif; letter-spacing: .05em; will-change: transform; }
             #logo.img { background: currentColor; -webkit-mask: url(/static/osc-logo.png) center / contain no-repeat; mask: url(/static/osc-logo.png) center / contain no-repeat; }
     </style>
@@ -25,15 +26,28 @@
         // Everything below is in wall units (1 = one screen cell), NOT pixels. The position comes from the absolute wall
         // clock, so a 1px (or 1080p vs 1200p) difference in a PC's track length would put it at a completely different
         // point of the path. With a fixed logo size and speed in cells, every PC computes exactly the same path.
-        const SPEED_X = num("vx", 220) / 1920, SPEED_Y = num("vy", 140) / 1200; // cells/s (vx/vy given as px/s on a 1920x1200 screen)
+        const SPEED = num("speed", 100) / 100; // ?speed=150 = 1.5x
+        const SPEED_X = SPEED * num("vx", 220) / 1920, SPEED_Y = SPEED * num("vy", 140) / 1200; // cells/s (vx/vy given as px/s on a 1920x1200 screen)
         const LOGO_W = 0.18, LOGO_H = 0.22; // logo box in cells: fraction of a screen's width / height
         const COLORS = ["#ff3b30", "#ff9500", "#ffd60a", "#34c759", "#5ac8fa", "#0a84ff", "#bf5af2", "#ff2d55"];
         const logo = document.getElementById("logo");
         const isText = !!q.get("text");
         if (isText) logo.textContent = q.get("text"); else logo.className = "img"; // default: OSC logo
 
-        // Triangle wave: distance travelled p along a track of length L -> position + bounce count.
-        const bounce = (p, L) => { const m = p % (2 * L); return [m < L ? m : 2 * L - m, Math.floor(p / L)]; };
+        // Bounce with a bit of randomness: every pass across the track has its own speed (0.6x-1.4x), taken from a
+        // fixed seeded sequence so all PCs agree. 64 passes (even, so it ends where it began) = one repeating cycle.
+        const SEGS = 64;
+        const rng = (seed) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+        const mults = (seed) => { const r = rng(seed); return Array.from({ length: SEGS }, () => 0.6 + 0.8 * r()); };
+        const MX = mults(1), MY = mults(2);
+        // time t (s) along a track of length L at base speed v -> [position, bounce count]
+        function bounce(t, L, v, M) {
+            const dur = M.map((m) => L / (v * m)), cycle = dur.reduce((a, b) => a + b, 0);
+            let r = t % cycle, i = 0;
+            while (r >= dur[i]) r -= dur[i++];
+            const f = r / dur[i];
+            return [i % 2 ? L * (1 - f) : L * f, Math.floor(t / cycle) * SEGS + i];
+        }
 
         function frame() {
             const sw = innerWidth / rw, sh = innerHeight / rh; // size of one grid cell in px
@@ -41,8 +55,8 @@
             else { logo.style.width = (LOGO_W * sw) + "px"; logo.style.height = (LOGO_H * sh) + "px"; }
             const lw = isText ? logo.offsetWidth / sw : LOGO_W, lh = isText ? logo.offsetHeight / sh : LOGO_H;
             const t = Date.now() / 1000;
-            const [x, bx] = bounce(t * SPEED_X, Math.max(0.01, cols - lw));
-            const [y, by] = bounce(t * SPEED_Y, Math.max(0.01, rows - lh));
+            const [x, bx] = bounce(t, Math.max(0.01, cols - lw), SPEED_X, MX);
+            const [y, by] = bounce(t, Math.max(0.01, rows - lh), SPEED_Y, MY);
             logo.style.transform = `translate(${(x - col) * sw}px, ${(y - row) * sh}px)`;
             logo.style.color = COLORS[(bx + by) % COLORS.length];
             requestAnimationFrame(frame);

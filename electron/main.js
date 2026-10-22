@@ -332,7 +332,7 @@ function applyWindowDisplayCss(win) {
       display: none !important;
       -webkit-appearance: none !important;
     }
-    video { cursor: none !important; }
+    * { cursor: none !important; }
 
     ::-webkit-scrollbar {
       width: 0 !important;

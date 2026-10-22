@@ -77,6 +77,8 @@ class SplashSetting(Base):
     schedule_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
     schedule_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
     schedule_days: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    text: Mapped[str] = mapped_column(String(60), nullable=False, default="")  # empty = OSC logo
+    speed: Mapped[int] = mapped_column(Integer, nullable=False, default=100)  # percent
 
 
 class WallLayout(Base):
