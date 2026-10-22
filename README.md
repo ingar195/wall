@@ -180,7 +180,7 @@ You can also override these with environment variables: `WALL_DISPLAY_MODE`, `WA
 
 `/admin/wall` shows a live screenshot of every device display in a customizable grid. Layouts are JSON (`columns`, `rows`, tiles with `device`, `display`, `x`, `y`, `w`, `h`; use `"display": -1` to show every screen of a PC side by side, e.g. in span mode) edited via **Edit layout** and saved per name. Click a tile to take control: clicks, wheel, typed text and keys are relayed to that screen (Electron zone windows get in-page input; other popups fall back to `xdotool` on Linux). Devices capture only while the wall page is open.
 
-Bouncing-logo splash: add `http://<server>:8000/splash?text=Radxa` as a zone source. For one logo bouncing across the whole wall, give each screen `&cols=<total>&col=<index>` (and `rows`/`row`).
+Bouncing-logo splash: add `http://<server>:8000/splash` (OSC logo, or `?text=Radxa` for text) as a zone source on every screen. The Electron client adds its device and display, and the server places each screen using the first saved wall layout, so one logo bounces across the whole wall in sync. Manual placement: `?cols=<total>&col=<index>` (and `rows`/`row`).
 
 ## Device authentication
 

@@ -21,7 +21,7 @@
  *   WALL_PIXEL_SHIFT_INTERVAL_MS  Pixel shift interval in milliseconds
  */
 
-const { app, BrowserWindow, desktopCapturer, globalShortcut, net, screen, session } = require("electron");
+const { app, BrowserWindow, clipboard, desktopCapturer, globalShortcut, Menu, net, screen, session } = require("electron");
 const { execFile, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -280,7 +280,32 @@ function getTargetDisplayBounds() {
   };
 }
 
+// The browser's own (native) context menu, like Chrome shows. While it is open it is an OS popup above
+// our windows, so remote clicks/keys go to the OS (not into the page) until it closes.
+let contextMenuOpen = false;
+
+function attachContextMenu(win) {
+  win.webContents.on("context-menu", (_event, params) => {
+    const wc = win.webContents;
+    const items = [
+      { label: "Back", enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
+      { label: "Forward", enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
+      { label: "Reload", click: () => wc.reload() },
+      { type: "separator" },
+    ];
+    if (params.linkURL) items.push({ label: "Copy link address", click: () => clipboard.writeText(params.linkURL) });
+    if (params.isEditable) items.push({ role: "cut" }, { role: "copy" }, { role: "paste" });
+    else if (params.selectionText) items.push({ role: "copy" });
+    items.push({ role: "selectAll" });
+    contextMenuOpen = true;
+    const release = () => { contextMenuOpen = false; };
+    setTimeout(release, 20_000); // safety: never leave input stuck in OS mode
+    Menu.buildFromTemplate(items).popup({ window: win, x: params.x, y: params.y, callback: release });
+  });
+}
+
 function applyWindowDisplayCss(win) {
+  attachContextMenu(win);
   const css = `
     html, body {
       background: #000000 !important;
@@ -506,6 +531,19 @@ function showPairingScreen() {
   closeBackgroundWindow();
   const win = ensurePairingWindow();
   win.loadURL(`${SERVER_BASE}/display/${encodeURIComponent(DEVICE_ID)}`);
+}
+
+/** /splash learns which wall tile this window is: add our device id and the display index (-1 = spans several). */
+function withSplashParams(url, bounds) {
+  if (!url.includes("/splash")) return url;
+  const list = sortedDisplays();
+  const cx = bounds.x + bounds.width / 2, cy = bounds.y + bounds.height / 2;
+  const i = list.findIndex((d) => cx >= d.bounds.x && cx < d.bounds.x + d.bounds.width && cy >= d.bounds.y && cy < d.bounds.y + d.bounds.height);
+  const spans = i < 0 || bounds.width > list[i].bounds.width * 1.05 || bounds.height > list[i].bounds.height * 1.05;
+  const u = new URL(url);
+  u.searchParams.set("device", DEVICE_ID);
+  u.searchParams.set("display", spans ? -1 : i);
+  return u.toString();
 }
 
 function applyLayout(data) {
@@ -832,6 +870,8 @@ function injectInput(msg) {
   } else {
     target = lastInputWin && !lastInputWin.isDestroyed() ? lastInputWin : null;
   }
+
+  if (contextMenuOpen) target = null; // menu is an OS popup: send input to the OS
 
   if (target) {
     const wc = target.webContents;
